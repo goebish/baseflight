@@ -30,7 +30,7 @@ SERIAL_DEVICE	?= /dev/ttyUSB0
 # Things that need to be maintained as the source changes
 #
 
-VALID_TARGETS	 = NAZE OLIMEXINO CJMCU
+VALID_TARGETS	 = NAZE OLIMEXINO CJMCU EUSTM32F103RC
 
 # Working directories
 ROOT		 = $(dir $(lastword $(MAKEFILE_LIST)))
@@ -62,7 +62,6 @@ COMMON_SRC	 = buzzer.c \
 		   sbus.c \
 		   sumd.c \
 		   spektrum.c \
-		   startup_stm32f10x_md_gcc.S \
 		   $(CMSIS_SRC) \
 		   $(STDPERIPH_SRC)
 
@@ -91,8 +90,31 @@ NAZE_SRC	 = drv_adc.c \
 		   drv_pwm.c \
 		   drv_spi.c \
 		   drv_timer.c \
+		   startup_stm32f10x_md_gcc.S \
 		   $(HIGHEND_SRC) \
 		   $(COMMON_SRC)
+		   
+# Source files for the NAZE target
+EUSTM32F103RC_SRC	 = drv_adc.c \
+		   drv_adxl345.c \
+		   drv_ak8975.c \
+		   drv_bma280.c \
+		   drv_bmp085.c \
+		   drv_ms5611.c \
+		   drv_hcsr04.c \
+		   drv_hmc5883l.c \
+		   drv_ledring.c \
+		   drv_mma845x.c \
+		   drv_mpu3050.c \
+		   drv_mpu6050.c \
+		   drv_mpu6500.c \
+		   drv_l3g4200d.c \
+		   drv_pwm.c \
+		   drv_spi.c \
+		   drv_timer.c \
+		   startup_stm32f10x_hd_gcc.S \
+		   $(HIGHEND_SRC) \
+		   $(COMMON_SRC)		   
 
 # Source files for the OLIMEXINO target
 OLIMEXINO_SRC	 = drv_spi.c \
@@ -103,6 +125,7 @@ OLIMEXINO_SRC	 = drv_spi.c \
 		   drv_l3g4200d.c \
 		   drv_pwm.c \
 		   drv_timer.c \
+		   startup_stm32f10x_md_gcc.S \
 		   $(HIGHEND_SRC) \
 		   $(COMMON_SRC)
 
@@ -112,6 +135,7 @@ CJMCU_SRC	 = drv_adc.c \
 		   drv_hmc5883l.c \
 		   drv_pwm.c \
 		   drv_timer.c \
+		   startup_stm32f10x_md_gcc.S \
 		   $(COMMON_SRC)
 
 # In some cases, %.s regarded as intermediate file, which is actually not.
@@ -158,6 +182,15 @@ endif
 
 DEBUG_FLAGS	 = -ggdb3
 
+# XXX Map/crossref output?
+ifeq ($(TARGET),EUSTM32F103RC)
+LD_SCRIPT	 = $(ROOT)/stm32_flash_f103_256k.ld
+DEVICE_FLAGS = -DSTM32F10X_HD
+else
+LD_SCRIPT	 = $(ROOT)/stm32_flash.ld
+DEVICE_FLAGS = -DSTM32F10X_MD
+endif
+
 CFLAGS		 = $(ARCH_FLAGS) \
 		   $(LTO_FLAGS) \
 		   $(addprefix -D,$(OPTIONS)) \
@@ -167,7 +200,7 @@ CFLAGS		 = $(ARCH_FLAGS) \
 		   -Wall -pedantic -Wextra -Wshadow -Wunsafe-loop-optimizations \
 		   -ffunction-sections \
 		   -fdata-sections \
-		   -DSTM32F10X_MD \
+		   $(DEVICE_FLAGS) \
 		   -DUSE_STDPERIPH_DRIVER \
 		   -D$(TARGET)
 
@@ -175,8 +208,6 @@ ASFLAGS		 = $(ARCH_FLAGS) \
 		   -x assembler-with-cpp \
 		   $(addprefix -I,$(INCLUDE_DIRS))
 
-# XXX Map/crossref output?
-LD_SCRIPT	 = $(ROOT)/stm32_flash.ld
 LDFLAGS		 = -lm \
 		   -nostartfiles \
 		   --specs=nano.specs \
