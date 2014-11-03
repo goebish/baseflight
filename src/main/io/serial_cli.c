@@ -29,6 +29,7 @@
 #include "build_config.h"
 
 #include "common/axis.h"
+#include "common/maths.h"
 #include "common/color.h"
 #include "common/typeconversion.h"
 
@@ -70,6 +71,7 @@
 // we unset this on 'exit'
 extern uint8_t cliMode;
 static void cliAux(char *cmdline);
+static void cliAdjustmentRange(char *cmdline);
 static void cliCMix(char *cmdline);
 static void cliDefaults(char *cmdline);
 static void cliDump(char *cmdLine);
@@ -87,6 +89,7 @@ static void cliColor(char *cmdline);
 static void cliMixer(char *cmdline);
 static void cliMotor(char *cmdline);
 static void cliProfile(char *cmdline);
+static void cliRateProfile(char *cmdline);
 static void cliSave(char *cmdline);
 static void cliSet(char *cmdline);
 static void cliGet(char *cmdline);
@@ -128,7 +131,7 @@ static const char * const sensorNames[] = {
 };
 
 static const char * const accNames[] = {
-    "", "ADXL345", "MPU6050", "MMA845x", "BMA280", "LSM303DLHC", "MPU6000", "FAKE", "None", NULL
+    "", "ADXL345", "MPU6050", "MMA845x", "BMA280", "LSM303DLHC", "MPU6000", "MPU6500", "FAKE", "None", NULL
 };
 
 typedef struct {
@@ -139,7 +142,8 @@ typedef struct {
 
 // should be sorted a..z for bsearch()
 const clicmd_t cmdTable[] = {
-    { "aux", "feature_name auxflag or blank for list", cliAux },
+    { "adjrange", "show/set adjustment ranges settings", cliAdjustmentRange },
+    { "aux", "show/set aux settings", cliAux },
     { "cmix", "design custom mixer", cliCMix },
 #ifdef LED_STRIP
     { "color", "configure colors", cliColor },
@@ -160,6 +164,7 @@ const clicmd_t cmdTable[] = {
     { "mixer", "mixer name or list", cliMixer },
     { "motor", "get/set motor output value", cliMotor },
     { "profile", "index (0 to 2)", cliProfile },
+    { "rateprofile", "index (0 to 2)", cliRateProfile },
     { "save", "save and reboot", cliSave },
     { "set", "name=value or blank or * for list", cliSet },
     { "status", "show system status", cliStatus },
@@ -176,15 +181,16 @@ typedef enum {
     VAR_FLOAT = (1 << 5),
 
     MASTER_VALUE = (1 << 6),
-    PROFILE_VALUE = (1 << 7)
+    PROFILE_VALUE = (1 << 7),
+    CONTROL_RATE_VALUE = (1 << 8)
 } cliValueFlag_e;
 
 #define VALUE_TYPE_MASK (VAR_UINT8 | VAR_INT8 | VAR_UINT16 | VAR_INT16 | VAR_UINT32 | VAR_FLOAT)
-#define SECTION_MASK (MASTER_VALUE | PROFILE_VALUE)
+#define SECTION_MASK (MASTER_VALUE | PROFILE_VALUE | CONTROL_RATE_VALUE)
 
 typedef struct {
     const char *name;
-    const uint8_t type; // cliValueFlag_e - specify one of each from VALUE_TYPE_MASK and SECTION_MASK
+    const uint16_t type; // cliValueFlag_e - specify one of each from VALUE_TYPE_MASK and SECTION_MASK
     void *ptr;
     const int32_t min;
     const int32_t max;
@@ -218,15 +224,17 @@ const clivalue_t valueTable[] = {
 
     { "flaps_speed",                VAR_UINT8  | MASTER_VALUE,  &masterConfig.airplaneConfig.flaps_speed, 0, 100 },
 
-    { "fixedwing_althold_dir",      VAR_INT8   | MASTER_VALUE | MASTER_VALUE,  &masterConfig.fixedwing_althold_dir, -1, 1 },
+    { "fixedwing_althold_dir",      VAR_INT8   | MASTER_VALUE,  &masterConfig.fixedwing_althold_dir, -1, 1 },
 
     { "serial_port_1_scenario",     VAR_UINT8  | MASTER_VALUE,  &masterConfig.serialConfig.serial_port_scenario[0], 0, SERIAL_PORT_SCENARIO_MAX },
     { "serial_port_2_scenario",     VAR_UINT8  | MASTER_VALUE,  &masterConfig.serialConfig.serial_port_scenario[1], 0, SERIAL_PORT_SCENARIO_MAX },
 #if (SERIAL_PORT_COUNT > 2)
     { "serial_port_3_scenario",     VAR_UINT8  | MASTER_VALUE,  &masterConfig.serialConfig.serial_port_scenario[2], 0, SERIAL_PORT_SCENARIO_MAX },
+#if !defined(CC3D)
     { "serial_port_4_scenario",     VAR_UINT8  | MASTER_VALUE,  &masterConfig.serialConfig.serial_port_scenario[3], 0, SERIAL_PORT_SCENARIO_MAX },
 #if (SERIAL_PORT_COUNT > 4)
     { "serial_port_5_scenario",     VAR_UINT8  | MASTER_VALUE,  &masterConfig.serialConfig.serial_port_scenario[4], 0, SERIAL_PORT_SCENARIO_MAX },
+#endif
 #endif
 #endif
 
@@ -240,6 +248,7 @@ const clivalue_t valueTable[] = {
 
     { "gps_provider",               VAR_UINT8  | MASTER_VALUE,  &masterConfig.gpsConfig.provider, 0, GPS_PROVIDER_MAX },
     { "gps_sbas_mode",              VAR_UINT8  | MASTER_VALUE,  &masterConfig.gpsConfig.sbasMode, 0, SBAS_MODE_MAX },
+	{ "gps_auto_config",            VAR_UINT8  | MASTER_VALUE,  &masterConfig.gpsConfig.gpsAutoConfig, 0, GPS_AUTOCONFIG_OFF },
 
 
     { "gps_pos_p",                  VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].pidProfile.P8[PIDPOS], 0, 200 },
@@ -263,8 +272,13 @@ const clivalue_t valueTable[] = {
     { "telemetry_provider",         VAR_UINT8  | MASTER_VALUE,  &masterConfig.telemetryConfig.telemetry_provider, 0, TELEMETRY_PROVIDER_MAX },
     { "telemetry_switch",           VAR_UINT8  | MASTER_VALUE,  &masterConfig.telemetryConfig.telemetry_switch, 0, 1 },
     { "frsky_inversion",            VAR_UINT8  | MASTER_VALUE,  &masterConfig.telemetryConfig.frsky_inversion, 0, 1 },
+    { "frsky_default_lattitude",    VAR_FLOAT  | MASTER_VALUE,  &masterConfig.telemetryConfig.gpsNoFixLatitude, -90.0, 90.0 },
+    { "frsky_default_longitude",    VAR_FLOAT  | MASTER_VALUE,  &masterConfig.telemetryConfig.gpsNoFixLongitude, -180.0, 180.0 },
+    { "frsky_coordinates_format",   VAR_UINT8  | MASTER_VALUE,  &masterConfig.telemetryConfig.frsky_coordinate_format, 0, FRSKY_FORMAT_NMEA },
+    { "frsky_unit",                 VAR_UINT8  | MASTER_VALUE,  &masterConfig.telemetryConfig.frsky_unit, 0, FRSKY_UNIT_IMPERIALS },
+    { "frsky_battery_size",         VAR_UINT16 | MASTER_VALUE,  &masterConfig.telemetryConfig.batterySize, 0, 20000 },
 
-    { "vbat_scale",                 VAR_UINT8  | MASTER_VALUE,  &masterConfig.batteryConfig.vbatscale, 10, 200 },
+    { "vbat_scale",                 VAR_UINT8  | MASTER_VALUE,  &masterConfig.batteryConfig.vbatscale, VBAT_SCALE_MIN, VBAT_SCALE_MAX },
     { "vbat_max_cell_voltage",      VAR_UINT8  | MASTER_VALUE,  &masterConfig.batteryConfig.vbatmaxcellvoltage, 10, 50 },
     { "vbat_min_cell_voltage",      VAR_UINT8  | MASTER_VALUE,  &masterConfig.batteryConfig.vbatmincellvoltage, 10, 50 },
     { "current_meter_scale",        VAR_UINT16 | MASTER_VALUE,  &masterConfig.batteryConfig.currentMeterScale, 1, 10000 },
@@ -300,14 +314,15 @@ const clivalue_t valueTable[] = {
     { "yaw_direction",              VAR_INT8   | PROFILE_VALUE, &masterConfig.profile[0].mixerConfig.yaw_direction, -1, 1 },
     { "tri_unarmed_servo",          VAR_INT8   | PROFILE_VALUE, &masterConfig.profile[0].mixerConfig.tri_unarmed_servo, 0, 1 },
 
-    { "rc_rate",                    VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.rcRate8, 0, 250 },
-    { "rc_expo",                    VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.rcExpo8, 0, 100 },
-    { "thr_mid",                    VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.thrMid8, 0, 100 },
-    { "thr_expo",                   VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.thrExpo8, 0, 100 },
-    { "roll_pitch_rate",            VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.rollPitchRate, 0, 100 },
-    { "yaw_rate",                   VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].controlRateConfig.yawRate, 0, 100 },
-    { "tpa_rate",                   VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].dynThrPID, 0, 100},
-    { "tpa_breakpoint",             VAR_UINT16 | PROFILE_VALUE, &masterConfig.profile[0].tpa_breakpoint, PWM_RANGE_MIN, PWM_RANGE_MAX},
+    { "default_rate_profile",       VAR_UINT8  | PROFILE_VALUE , &masterConfig.profile[0].defaultRateProfileIndex, 0, MAX_CONTROL_RATE_PROFILE_COUNT - 1 },
+    { "rc_rate",                    VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].rcRate8, 0, 250 },
+    { "rc_expo",                    VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].rcExpo8, 0, 100 },
+    { "thr_mid",                    VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].thrMid8, 0, 100 },
+    { "thr_expo",                   VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].thrExpo8, 0, 100 },
+    { "roll_pitch_rate",            VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].rollPitchRate, 0, 100 },
+    { "yaw_rate",                   VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].yawRate, 0, 100 },
+    { "tpa_rate",                   VAR_UINT8  | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].dynThrPID, 0, 100},
+    { "tpa_breakpoint",             VAR_UINT16 | CONTROL_RATE_VALUE, &masterConfig.controlRateProfiles[0].tpa_breakpoint, PWM_RANGE_MIN, PWM_RANGE_MAX},
 
     { "failsafe_delay",             VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].failsafeConfig.failsafe_delay, 0, 200 },
     { "failsafe_off_delay",         VAR_UINT8  | PROFILE_VALUE, &masterConfig.profile[0].failsafeConfig.failsafe_off_delay, 0, 200 },
@@ -394,6 +409,30 @@ static int cliCompare(const void *a, const void *b)
     return strncasecmp(ca->name, cb->name, strlen(cb->name));
 }
 
+static char *processChannelRangeArgs(char *ptr, channelRange_t *range, uint8_t *validArgumentCount)
+{
+    int val;
+    ptr = strchr(ptr, ' ');
+    if (ptr) {
+        val = atoi(++ptr);
+        val = CHANNEL_VALUE_TO_STEP(val);
+        if (val >= MIN_MODE_RANGE_STEP && val <= MAX_MODE_RANGE_STEP) {
+            range->startStep = val;
+            (*validArgumentCount)++;
+        }
+    }
+    ptr = strchr(ptr, ' ');
+    if (ptr) {
+        val = atoi(++ptr);
+        val = CHANNEL_VALUE_TO_STEP(val);
+        if (val >= MIN_MODE_RANGE_STEP && val <= MAX_MODE_RANGE_STEP) {
+            range->endStep = val;
+            (*validArgumentCount)++;
+        }
+    }
+    return ptr;
+}
+
 static void cliAux(char *cmdline)
 {
     int i, val = 0;
@@ -403,17 +442,116 @@ static void cliAux(char *cmdline)
     len = strlen(cmdline);
     if (len == 0) {
         // print out aux channel settings
-        for (i = 0; i < CHECKBOX_ITEM_COUNT; i++)
-            printf("aux %u %u\r\n", i, currentProfile->activate[i]);
+        for (i = 0; i < MAX_MODE_ACTIVATION_CONDITION_COUNT; i++) {
+            modeActivationCondition_t *mac = &currentProfile->modeActivationConditions[i];
+            printf("aux %u %u %u %u %u\r\n",
+                i,
+                mac->modeId,
+                mac->auxChannelIndex,
+                MODE_STEP_TO_CHANNEL_VALUE(mac->range.startStep),
+                MODE_STEP_TO_CHANNEL_VALUE(mac->range.endStep)
+            );
+        }
     } else {
         ptr = cmdline;
-        i = atoi(ptr);
-        if (i < CHECKBOX_ITEM_COUNT) {
-            ptr = strchr(cmdline, ' ');
-            val = atoi(ptr);
-            currentProfile->activate[i] = val;
+        i = atoi(ptr++);
+        if (i < MAX_MODE_ACTIVATION_CONDITION_COUNT) {
+            modeActivationCondition_t *mac = &currentProfile->modeActivationConditions[i];
+            uint8_t validArgumentCount = 0;
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < CHECKBOX_ITEM_COUNT) {
+                    mac->modeId = val;
+                    validArgumentCount++;
+                }
+            }
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < MAX_AUX_CHANNEL_COUNT) {
+                    mac->auxChannelIndex = val;
+                    validArgumentCount++;
+                }
+            }
+            ptr = processChannelRangeArgs(ptr, &mac->range, &validArgumentCount);
+
+            if (validArgumentCount != 4) {
+                memset(mac, 0, sizeof(modeActivationCondition_t));
+            }
         } else {
-            printf("Invalid Feature index: must be < %u\r\n", CHECKBOX_ITEM_COUNT);
+            printf("index: must be < %u\r\n", MAX_MODE_ACTIVATION_CONDITION_COUNT);
+        }
+    }
+}
+
+
+static void cliAdjustmentRange(char *cmdline)
+{
+    int i, val = 0;
+    uint8_t len;
+    char *ptr;
+
+    len = strlen(cmdline);
+    if (len == 0) {
+        // print out adjustment ranges channel settings
+        for (i = 0; i < MAX_ADJUSTMENT_RANGE_COUNT; i++) {
+            adjustmentRange_t *ar = &currentProfile->adjustmentRanges[i];
+            printf("adjrange %u %u %u %u %u %u %u\r\n",
+                i,
+                ar->adjustmentIndex,
+                ar->auxChannelIndex,
+                MODE_STEP_TO_CHANNEL_VALUE(ar->range.startStep),
+                MODE_STEP_TO_CHANNEL_VALUE(ar->range.endStep),
+                ar->adjustmentFunction,
+                ar->auxSwitchChannelIndex
+            );
+        }
+    } else {
+        ptr = cmdline;
+        i = atoi(ptr++);
+        if (i < MAX_ADJUSTMENT_RANGE_COUNT) {
+            adjustmentRange_t *ar = &currentProfile->adjustmentRanges[i];
+            uint8_t validArgumentCount = 0;
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < MAX_SIMULTANEOUS_ADJUSTMENT_COUNT) {
+                    ar->adjustmentIndex = val;
+                    validArgumentCount++;
+                }
+            }
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < MAX_AUX_CHANNEL_COUNT) {
+                    ar->auxChannelIndex = val;
+                    validArgumentCount++;
+                }
+            }
+            ptr = processChannelRangeArgs(ptr, &ar->range, &validArgumentCount);
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < ADJUSTMENT_FUNCTION_COUNT) {
+                    ar->adjustmentFunction = val;
+                    validArgumentCount++;
+                }
+            }
+            ptr = strchr(ptr, ' ');
+            if (ptr) {
+                val = atoi(++ptr);
+                if (val >= 0 && val < MAX_AUX_CHANNEL_COUNT) {
+                    ar->auxSwitchChannelIndex = val;
+                    validArgumentCount++;
+                }
+            }
+
+            if (validArgumentCount != 6) {
+                memset(ar, 0, sizeof(adjustmentRange_t));
+            }
+        } else {
+            printf("index: must be < %u\r\n", MAX_ADJUSTMENT_RANGE_COUNT);
         }
     }
 }
@@ -562,7 +700,7 @@ static void cliColor(char *cmdline)
 }
 #endif
 
-static void dumpValues(uint8_t mask)
+static void dumpValues(uint16_t mask)
 {
     uint32_t i;
     const clivalue_t *value;
@@ -581,10 +719,11 @@ static void dumpValues(uint8_t mask)
 
 typedef enum {
     DUMP_MASTER = (1 << 0),
-    DUMP_PROFILE = (1 << 1)
+    DUMP_PROFILE = (1 << 1),
+    DUMP_CONTROL_RATE_PROFILE = (1 << 2)
 } dumpFlags_e;
 
-#define DUMP_ALL (DUMP_MASTER | DUMP_PROFILE)
+#define DUMP_ALL (DUMP_MASTER | DUMP_PROFILE | DUMP_CONTROL_RATE_PROFILE)
 
 
 static const char* const sectionBreak = "\r\n";
@@ -604,6 +743,9 @@ static void cliDump(char *cmdline)
     }
     if (strcasecmp(cmdline, "profile") == 0) {
         dumpMask = DUMP_PROFILE; // only
+    }
+    if (strcasecmp(cmdline, "rates") == 0) {
+        dumpMask = DUMP_CONTROL_RATE_PROFILE; // only
     }
 
     if (dumpMask & DUMP_MASTER) {
@@ -684,9 +826,24 @@ static void cliDump(char *cmdline)
 
         cliAux("");
 
+        printf("\r\n# adjrange\r\n");
+
+        cliAdjustmentRange("");
+
         printSectionBreak();
 
         dumpValues(PROFILE_VALUE);
+    }
+
+    if (dumpMask & DUMP_CONTROL_RATE_PROFILE) {
+        printf("\r\n# dump rates\r\n");
+
+        printf("\r\n# rateprofile\r\n");
+        cliRateProfile("");
+
+        printSectionBreak();
+
+        dumpValues(CONTROL_RATE_VALUE);
     }
 }
 
@@ -933,11 +1090,11 @@ static void cliProfile(char *cmdline)
 
     len = strlen(cmdline);
     if (len == 0) {
-        printf("profile %d\r\n", masterConfig.current_profile_index);
+        printf("profile %d\r\n", getCurrentProfile());
         return;
     } else {
         i = atoi(cmdline);
-        if (i >= 0 && i <= 2) {
+        if (i >= 0 && i < MAX_PROFILE_COUNT) {
             masterConfig.current_profile_index = i;
             writeEEPROM();
             readEEPROM();
@@ -946,10 +1103,28 @@ static void cliProfile(char *cmdline)
     }
 }
 
+static void cliRateProfile(char *cmdline)
+{
+    uint8_t len;
+    int i;
+
+    len = strlen(cmdline);
+    if (len == 0) {
+        printf("rateprofile %d\r\n", getCurrentControlRateProfile());
+        return;
+    } else {
+        i = atoi(cmdline);
+        if (i >= 0 && i < MAX_CONTROL_RATE_PROFILE_COUNT) {
+            changeControlRateProfile(i);
+            cliRateProfile("");
+        }
+    }
+}
+
 static void cliReboot(void) {
     cliPrint("\r\nRebooting");
     waitForSerialPortToFinishTransmitting(cliPort);
-    systemReset(false);
+    systemReset();
 }
 
 static void cliSave(char *cmdline)
@@ -991,6 +1166,9 @@ static void cliPrintVar(const clivalue_t *var, uint32_t full)
     if (var->type & PROFILE_VALUE) {
         ptr = ((uint8_t *)ptr) + (sizeof(profile_t) * masterConfig.current_profile_index);
     }
+    if (var->type & CONTROL_RATE_VALUE) {
+        ptr = ((uint8_t *)ptr) + (sizeof(controlRateConfig_t) * getCurrentControlRateProfile());
+    }
 
     switch (var->type & VALUE_TYPE_MASK) {
         case VAR_UINT8:
@@ -1031,6 +1209,9 @@ static void cliSetVar(const clivalue_t *var, const int_float_value_t value)
     void *ptr = var->ptr;
     if (var->type & PROFILE_VALUE) {
         ptr = ((uint8_t *)ptr) + (sizeof(profile_t) * masterConfig.current_profile_index);
+    }
+    if (var->type & CONTROL_RATE_VALUE) {
+        ptr = ((uint8_t *)ptr) + (sizeof(controlRateConfig_t) * getCurrentControlRateProfile());
     }
 
     switch (var->type & VALUE_TYPE_MASK) {
@@ -1161,14 +1342,20 @@ static void cliStatus(char *cmdline)
     }
     cliPrint("\r\n");
 
-    printf("Cycle Time: %d, I2C Errors: %d, config size: %d\r\n", cycleTime, i2cGetErrorCounter(), sizeof(master_t));
+#ifdef USE_I2C
+    uint16_t i2cErrorCounter = i2cGetErrorCounter();
+#else
+    uint16_t i2cErrorCounter = 0;
+#endif
+
+    printf("Cycle Time: %d, I2C Errors: %d, config size: %d\r\n", cycleTime, i2cErrorCounter, sizeof(master_t));
 }
 
 static void cliVersion(char *cmdline)
 {
     UNUSED(cmdline);
 
-    printf("Cleanflight/%s" __DATE__ " / " __TIME__ " (%s)", targetName, shortGitRevision);
+    printf("Cleanflight/%s %s / %s (%s)", targetName, buildDate, buildTime, shortGitRevision);
 }
 
 void cliProcess(void)

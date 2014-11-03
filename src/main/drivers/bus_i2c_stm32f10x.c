@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include <platform.h>
 
@@ -26,6 +27,7 @@
 #include "system.h"
 
 #include "bus_i2c.h"
+#include "nvic.h"
 
 #ifndef SOFT_I2C
 
@@ -56,7 +58,7 @@ static const i2cDevice_t i2cHardwareMap[] = {
 };
 
 // Copy of peripheral address for IRQ routines
-static I2C_TypeDef *I2Cx;
+static I2C_TypeDef *I2Cx = NULL;
 // Copy of device index for reinit, etc purposes
 static I2CDevice I2Cx_index;
 
@@ -116,6 +118,9 @@ bool i2cWriteBuffer(uint8_t addr_, uint8_t reg_, uint8_t len_, uint8_t *data)
     busy = 1;
     error = false;
 
+    if (!I2Cx)
+        return false;
+
     if (!(I2Cx->CR2 & I2C_IT_EVT)) {                                    // if we are restarting the driver
         if (!(I2Cx->CR1 & 0x0100)) {                                    // ensure sending a start
             while (I2Cx->CR1 & 0x0200 && --timeout > 0) { ; }           // wait for any stop to finish sending
@@ -155,6 +160,9 @@ bool i2cRead(uint8_t addr_, uint8_t reg_, uint8_t len, uint8_t* buf)
     busy = 1;
     error = false;
 
+    if (!I2Cx)
+        return false;
+
     if (!(I2Cx->CR2 & I2C_IT_EVT)) {                                    // if we are restarting the driver
         if (!(I2Cx->CR1 & 0x0100)) {                                    // ensure sending a start
             while (I2Cx->CR1 & 0x0200 && --timeout > 0) { ; }           // wait for any stop to finish sending
@@ -188,6 +196,7 @@ static void i2c_er_handler(void)
         I2C_ITConfig(I2Cx, I2C_IT_BUF, DISABLE);                        // disable the RXNE/TXE interrupt - prevent the ISR tailchaining onto the ER (hopefully)
         if (!(SR1Register & 0x0200) && !(I2Cx->CR1 & 0x0200)) {         // if we dont have an ARLO error, ensure sending of a stop
             if (I2Cx->CR1 & 0x0100) {                                   // We are currently trying to send a start, this is very bad as start, stop will hang the peripheral
+                // TODO - busy waiting in highest priority IRQ. Maybe only set flag and handle it from main loop
                 while (I2Cx->CR1 & 0x0100) { ; }                        // wait for any start to finish sending
                 I2C_GenerateSTOP(I2Cx, ENABLE);                         // send stop to finalise bus transaction
                 while (I2Cx->CR1 & 0x0200) { ; }                        // wait for stop to finish sending
@@ -274,6 +283,7 @@ void i2c_ev_handler(void)
                 subaddress_sent = 1;                                    // this is set back to zero upon completion of the current task
             }
         }
+        // TODO - busy waiting in ISR
         // we must wait for the start to clear, otherwise we get constant BTF
         while (I2Cx->CR1 & 0x0100) { ; }
     } else if (SReg_1 & 0x0040) {                                       // Byte received - EV7
@@ -333,14 +343,15 @@ void i2cInit(I2CDevice index)
 
     // I2C ER Interrupt
     nvic.NVIC_IRQChannel = i2cHardwareMap[index].er_irq;
-    nvic.NVIC_IRQChannelPreemptionPriority = 0;
-    nvic.NVIC_IRQChannelSubPriority = 0;
+    nvic.NVIC_IRQChannelPreemptionPriority = I2C_ER_IRQ_PRIORITY;
+    nvic.NVIC_IRQChannelSubPriority = I2C_ER_IRQ_SUBPRIORITY;
     nvic.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&nvic);
 
     // I2C EV Interrupt
     nvic.NVIC_IRQChannel = i2cHardwareMap[index].ev_irq;
-    nvic.NVIC_IRQChannelPreemptionPriority = 0;
+    nvic.NVIC_IRQChannelPreemptionPriority = I2C_EV_IRQ_PRIORITY;
+    nvic.NVIC_IRQChannelSubPriority = I2C_EV_IRQ_SUBPRIORITY;
     NVIC_Init(&nvic);
 }
 

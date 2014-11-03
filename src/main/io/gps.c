@@ -59,6 +59,7 @@ extern int16_t debug[4];
 int32_t GPS_coord[2];               // LAT/LON
 
 uint8_t GPS_numSat;
+uint16_t GPS_hdop = 9999;           // Compute GPS quality signal
 uint8_t GPS_update = 0;             // it's a binary toggle to distinct a GPS position update
 
 uint16_t GPS_altitude;              // altitude in 0.1m
@@ -254,7 +255,10 @@ void gpsInitUblox(void)
             if (gpsData.messageState == GPS_MESSAGE_STATE_INIT) {
 
                 if (gpsData.state_position < sizeof(ubloxInit)) {
-                    serialWrite(gpsPort, ubloxInit[gpsData.state_position]);
+                    //Either use specific config file for GPS or let dynamically upload config
+                    if( gpsConfig->gpsAutoConfig == GPS_AUTOCONFIG_ON ) {
+                        serialWrite(gpsPort, ubloxInit[gpsData.state_position]);
+                    }
                     gpsData.state_position++;
                 } else {
                     gpsData.state_position = 0;
@@ -264,7 +268,10 @@ void gpsInitUblox(void)
 
             if (gpsData.messageState == GPS_MESSAGE_STATE_SBAS) {
                 if (gpsData.state_position < UBLOX_SBAS_MESSAGE_LENGTH) {
-                    serialWrite(gpsPort, ubloxSbas[gpsConfig->sbasMode].message[gpsData.state_position]);
+                    //Either use specific config file for GPS or let dynamically upload config
+                    if( gpsConfig->gpsAutoConfig == GPS_AUTOCONFIG_ON ) {
+                        serialWrite(gpsPort, ubloxSbas[gpsConfig->sbasMode].message[gpsData.state_position]);
+                    }
                     gpsData.state_position++;
                 } else {
                     gpsData.messageState++;
@@ -752,7 +759,7 @@ static bool UBLOX_parse_gps(void)
         if (!next_fix)
             DISABLE_STATE(GPS_FIX);
         GPS_numSat = _buffer.solution.satellites;
-        // GPS_hdop                        = _buffer.solution.position_DOP;
+        GPS_hdop = _buffer.solution.position_DOP;
         break;
     case MSG_VELNED:
         // speed_3d                        = _buffer.velned.speed_3d;  // cm/s

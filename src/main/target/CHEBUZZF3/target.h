@@ -17,6 +17,8 @@
 
 #pragma once
 
+#define TARGET_BOARD_IDENTIFIER "CHF3" // Chebuzz F3
+
 #define LED0_GPIO   GPIOE
 #define LED0_PIN    Pin_8|Pin_12 // Blue LEDs - PE8/PE12
 #define LED0_PERIPHERAL RCC_AHBPeriph_GPIOE
@@ -31,24 +33,30 @@
 #define BEEP_PERIPHERAL RCC_AHBPeriph_GPIOE
 #define BEEPER_INVERTED
 
-#define BARO_GPIO   GPIOC
-#define BARO_PIN    Pin_13
-
 #define GYRO
+#define USE_GYRO_L3GD20
+
 #define ACC
+#define USE_ACC_LSM303DLHC
+
 #define BEEPER
 #define LED0
 #define LED1
 
-#define SERIAL_PORT_COUNT 5
+#define USE_VCP
+#define USE_USART1
+#define USE_USART2
+#define SERIAL_PORT_COUNT 3
 
+#define USE_I2C
 #define I2C_DEVICE (I2CDEV_1)
 
 #define SENSORS_SET (SENSOR_ACC)
 
 #define GPS
 #define LED_STRIP
+#define LED_STRIP_TIMER TIM16
+
 #define TELEMETRY
-#define SOFT_SERIAL
 #define SERIAL_RX
 #define AUTOTUNE

@@ -54,6 +54,7 @@
 #include "io/ledstrip.h"
 #include "io/gps.h"
 #include "flight/failsafe.h"
+#include "flight/altitudehold.h"
 #include "flight/imu.h"
 #include "flight/navigation.h"
 
@@ -69,6 +70,7 @@ void setPIDController(int type); // FIXME PID code needs to be in flight_pid.c/h
 void mixerUseConfigs(servoParam_t *servoConfToUse, flight3DConfig_t *flight3DConfigToUse,
         escAndServoConfig_t *escAndServoConfigToUse, mixerConfig_t *mixerConfigToUse,
         airplaneConfig_t *airplaneConfigToUse, rxConfig_t *rxConfig, gimbalConfig_t *gimbalConfigToUse);
+void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, escAndServoConfig_t *escAndServoConfigToUse, pidProfile_t *pidProfileToUse);
 
 #define FLASH_TO_RESERVE_FOR_CONFIG 0x800
 
@@ -96,10 +98,13 @@ void mixerUseConfigs(servoParam_t *servoConfToUse, flight3DConfig_t *flight3DCon
 // use the last flash pages for storage
 #define CONFIG_START_FLASH_ADDRESS (0x08000000 + (uint32_t)((FLASH_PAGE_SIZE * FLASH_PAGE_COUNT) - FLASH_TO_RESERVE_FOR_CONFIG))
 
-master_t masterConfig;      // master config struct with data independent from profiles
-profile_t *currentProfile;   // profile config struct
+master_t masterConfig;                 // master config struct with data independent from profiles
+profile_t *currentProfile;
 
-static const uint8_t EEPROM_CONF_VERSION = 79;
+static uint8_t currentControlRateProfileIndex = 0;
+controlRateConfig_t *currentControlRateProfile;
+
+static const uint8_t EEPROM_CONF_VERSION = 84;
 
 static void resetAccelerometerTrims(flightDynamicsTrims_t *accelerometerTrims)
 {
@@ -200,18 +205,29 @@ void resetTelemetryConfig(telemetryConfig_t *telemetryConfig)
     telemetryConfig->telemetry_provider = TELEMETRY_PROVIDER_FRSKY;
     telemetryConfig->frsky_inversion = SERIAL_NOT_INVERTED;
     telemetryConfig->telemetry_switch = 0;
+    telemetryConfig->gpsNoFixLatitude = 0;
+    telemetryConfig->gpsNoFixLongitude = 0;
+    telemetryConfig->frsky_coordinate_format = FRSKY_FORMAT_DMS;
+    telemetryConfig->frsky_unit = FRSKY_UNIT_METRICS;
+    telemetryConfig->batterySize = 0;
 }
 
 void resetSerialConfig(serialConfig_t *serialConfig)
 {
+#ifdef SWAP_SERIAL_PORT_1_AND_2_DEFAULTS
+    serialConfig->serial_port_scenario[0] = lookupScenarioIndex(SCENARIO_UNUSED);
+    serialConfig->serial_port_scenario[1] = lookupScenarioIndex(SCENARIO_MSP_CLI_TELEMETRY_GPS_PASTHROUGH);
+#else
     serialConfig->serial_port_scenario[0] = lookupScenarioIndex(SCENARIO_MSP_CLI_TELEMETRY_GPS_PASTHROUGH);
-    serialConfig->serial_port_scenario[1] = lookupScenarioIndex(SCENARIO_GPS_ONLY);
+    serialConfig->serial_port_scenario[1] = lookupScenarioIndex(SCENARIO_UNUSED);
+#endif
 #if (SERIAL_PORT_COUNT > 2)
     serialConfig->serial_port_scenario[2] = lookupScenarioIndex(SCENARIO_UNUSED);
+#if (SERIAL_PORT_COUNT > 3)
     serialConfig->serial_port_scenario[3] = lookupScenarioIndex(SCENARIO_UNUSED);
-
 #if (SERIAL_PORT_COUNT > 4)
     serialConfig->serial_port_scenario[4] = lookupScenarioIndex(SCENARIO_UNUSED);
+#endif
 #endif
 #endif
 
@@ -223,10 +239,37 @@ void resetSerialConfig(serialConfig_t *serialConfig)
     serialConfig->reboot_character = 'R';
 }
 
+static void resetControlRateConfig(controlRateConfig_t *controlRateConfig) {
+    controlRateConfig->rcRate8 = 90;
+    controlRateConfig->rcExpo8 = 65;
+    controlRateConfig->rollPitchRate = 0;
+    controlRateConfig->yawRate = 0;
+    controlRateConfig->thrMid8 = 50;
+    controlRateConfig->thrExpo8 = 0;
+    controlRateConfig->dynThrPID = 0;
+    controlRateConfig->tpa_breakpoint = 1500;
+
+}
+
+uint8_t getCurrentProfile(void)
+{
+    return masterConfig.current_profile_index;
+}
 
 static void setProfile(uint8_t profileIndex)
 {
     currentProfile = &masterConfig.profile[profileIndex];
+}
+
+uint8_t getCurrentControlRateProfile(void)
+{
+    return currentControlRateProfileIndex;
+}
+
+static void setControlRateProfile(uint8_t profileIndex)
+{
+    currentControlRateProfileIndex = profileIndex;
+    currentControlRateProfile = &masterConfig.controlRateProfiles[profileIndex];
 }
 
 // Default settings
@@ -238,6 +281,7 @@ static void resetConf(void)
     // Clear all configuration
     memset(&masterConfig, 0, sizeof(master_t));
     setProfile(0);
+    setControlRateProfile(0);
 
     masterConfig.version = EEPROM_CONF_VERSION;
     masterConfig.mixerConfiguration = MULTITYPE_QUADX;
@@ -265,7 +309,7 @@ static void resetConf(void)
     masterConfig.yaw_control_direction = 1;
     masterConfig.gyroConfig.gyroMovementCalibrationThreshold = 32;
 
-    masterConfig.batteryConfig.vbatscale = 110;
+    masterConfig.batteryConfig.vbatscale = VBAT_SCALE_DEFAULT;
     masterConfig.batteryConfig.vbatmaxcellvoltage = 43;
     masterConfig.batteryConfig.vbatmincellvoltage = 33;
     masterConfig.batteryConfig.currentMeterOffset = 0;
@@ -303,6 +347,7 @@ static void resetConf(void)
     // gps/nav stuff
     masterConfig.gpsConfig.provider = GPS_NMEA;
     masterConfig.gpsConfig.sbasMode = SBAS_AUTO;
+    masterConfig.gpsConfig.gpsAutoConfig = GPS_AUTOCONFIG_ON;
 #endif
 
     resetSerialConfig(&masterConfig.serialConfig);
@@ -313,14 +358,7 @@ static void resetConf(void)
     currentProfile->pidController = 0;
     resetPidProfile(&currentProfile->pidProfile);
 
-    currentProfile->controlRateConfig.rcRate8 = 90;
-    currentProfile->controlRateConfig.rcExpo8 = 65;
-    currentProfile->controlRateConfig.rollPitchRate = 0;
-    currentProfile->controlRateConfig.yawRate = 0;
-    currentProfile->dynThrPID = 0;
-    currentProfile->tpa_breakpoint = 1500;
-    currentProfile->controlRateConfig.thrMid8 = 50;
-    currentProfile->controlRateConfig.thrExpo8 = 0;
+    resetControlRateConfig(&masterConfig.controlRateProfiles[0]);
 
     // for (i = 0; i < CHECKBOXITEMS; i++)
     //     cfg.activate[i] = 0;
@@ -382,8 +420,18 @@ static void resetConf(void)
 #endif
 
     // copy first profile into remaining profile
-    for (i = 1; i < 3; i++)
+    for (i = 1; i < MAX_PROFILE_COUNT; i++) {
         memcpy(&masterConfig.profile[i], currentProfile, sizeof(profile_t));
+    }
+
+    // copy first control rate config into remaining profile
+    for (i = 1; i < MAX_CONTROL_RATE_PROFILE_COUNT; i++) {
+        memcpy(&masterConfig.controlRateProfiles[i], currentControlRateProfile, sizeof(controlRateConfig_t));
+    }
+
+    for (i = 1; i < MAX_PROFILE_COUNT; i++) {
+        masterConfig.profile[i].defaultRateProfileIndex = i % MAX_CONTROL_RATE_PROFILE_COUNT;
+    }
 }
 
 static uint8_t calculateChecksum(const uint8_t *data, uint32_t length)
@@ -418,12 +466,19 @@ static bool isEEPROMContentValid(void)
     return true;
 }
 
+void activateControlRateConfig(void)
+{
+    generatePitchRollCurve(currentControlRateProfile);
+    generateThrottleCurve(currentControlRateProfile, &masterConfig.escAndServoConfig);
+}
+
 void activateConfig(void)
 {
     static imuRuntimeConfig_t imuRuntimeConfig;
 
-    generatePitchCurve(&currentProfile->controlRateConfig);
-    generateThrottleCurve(&currentProfile->controlRateConfig, &masterConfig.escAndServoConfig);
+    activateControlRateConfig();
+
+    useRcControlsConfig(currentProfile->modeActivationConditions, &masterConfig.escAndServoConfig, &currentProfile->pidProfile);
 
     useGyroConfig(&masterConfig.gyroConfig);
 #ifdef TELEMETRY
@@ -452,7 +507,8 @@ void activateConfig(void)
     imuRuntimeConfig.acc_unarmedcal = currentProfile->acc_unarmedcal;;
     imuRuntimeConfig.small_angle = masterConfig.small_angle;
 
-    configureImu(&imuRuntimeConfig, &currentProfile->pidProfile, &currentProfile->barometerConfig, &currentProfile->accDeadband);
+    configureImu(&imuRuntimeConfig, &currentProfile->pidProfile, &currentProfile->accDeadband);
+    configureAltitudeHold(&currentProfile->pidProfile, &currentProfile->barometerConfig);
 
     calculateThrottleAngleScale(currentProfile->throttle_correction_angle);
     calculateAccZLowPassFilterRCTimeConstant(currentProfile->accz_lpf_cutoff);
@@ -501,9 +557,21 @@ void validateAndFixConfig(void)
     }
 
 
-#if defined(STM32F10X)
-    // led strip needs the same timer as softserial
-    if (feature(FEATURE_SOFTSERIAL)) {
+#if defined(LED_STRIP) && (defined(USE_SOFTSERIAL1) || defined(USE_SOFTSERIAL2))
+    if (feature(FEATURE_SOFTSERIAL) && (
+#ifdef USE_SOFTSERIAL1
+            (LED_STRIP_TIMER == SOFTSERIAL_1_TIMER)
+#else
+            0
+#endif
+            ||
+#ifdef USE_SOFTSERIAL2
+            (LED_STRIP_TIMER == SOFTSERIAL_2_TIMER)
+#else
+            0
+#endif
+    )) {
+        // led strip needs the same timer as softserial
         featureClear(FEATURE_LED_STRIP);
     }
 #endif
@@ -542,11 +610,16 @@ void readEEPROM(void)
 
     // Read flash
     memcpy(&masterConfig, (char *) CONFIG_START_FLASH_ADDRESS, sizeof(master_t));
-    // Copy current profile
-    if (masterConfig.current_profile_index > 2) // sanity check
+
+    if (masterConfig.current_profile_index > MAX_PROFILE_COUNT - 1) // sanity check
         masterConfig.current_profile_index = 0;
 
     setProfile(masterConfig.current_profile_index);
+
+    if (currentProfile->defaultRateProfileIndex > MAX_CONTROL_RATE_PROFILE_COUNT - 1) // sanity check
+        currentProfile->defaultRateProfileIndex = 0;
+
+    setControlRateProfile(currentProfile->defaultRateProfileIndex);
 
     validateAndFixConfig();
     activateConfig();
@@ -638,6 +711,15 @@ void changeProfile(uint8_t profileIndex)
     writeEEPROM();
     readEEPROM();
     blinkLedAndSoundBeeper(2, 40, profileIndex + 1);
+}
+
+void changeControlRateProfile(uint8_t profileIndex)
+{
+    if (profileIndex > MAX_CONTROL_RATE_PROFILE_COUNT) {
+        profileIndex = MAX_CONTROL_RATE_PROFILE_COUNT - 1;
+    }
+    setControlRateProfile(profileIndex);
+    activateControlRateConfig();
 }
 
 bool feature(uint32_t mask)

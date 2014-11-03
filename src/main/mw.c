@@ -111,7 +111,7 @@ void updateAutotuneState(void)
     static bool landedAfterAutoTuning = false;
     static bool autoTuneWasUsed = false;
 
-    if (rcOptions[BOXAUTOTUNE]) {
+    if (IS_RC_MODE_ACTIVE(BOXAUTOTUNE)) {
         if (!FLIGHT_MODE(AUTOTUNE_MODE)) {
             if (ARMING_FLAG(ARMED)) {
                 if (isAutotuneIdle() || landedAfterAutoTuning) {
@@ -165,13 +165,13 @@ void annexCode(void)
     static int32_t vbatCycleTime = 0;
 
     // PITCH & ROLL only dynamic PID adjustemnt,  depending on throttle value
-    if (rcData[THROTTLE] < currentProfile->tpa_breakpoint) {
+    if (rcData[THROTTLE] < currentControlRateProfile->tpa_breakpoint) {
         prop2 = 100;
     } else {
         if (rcData[THROTTLE] < 2000) {
-            prop2 = 100 - (uint16_t)currentProfile->dynThrPID * (rcData[THROTTLE] - currentProfile->tpa_breakpoint) / (2000 - currentProfile->tpa_breakpoint);
+            prop2 = 100 - (uint16_t)currentControlRateProfile->dynThrPID * (rcData[THROTTLE] - currentControlRateProfile->tpa_breakpoint) / (2000 - currentControlRateProfile->tpa_breakpoint);
         } else {
-            prop2 = 100 - currentProfile->dynThrPID;
+            prop2 = 100 - currentControlRateProfile->dynThrPID;
         }
     }
 
@@ -188,10 +188,9 @@ void annexCode(void)
 
             tmp2 = tmp / 100;
             rcCommand[axis] = lookupPitchRollRC[tmp2] + (tmp - tmp2 * 100) * (lookupPitchRollRC[tmp2 + 1] - lookupPitchRollRC[tmp2]) / 100;
-            prop1 = 100 - (uint16_t)currentProfile->controlRateConfig.rollPitchRate * tmp / 500;
+            prop1 = 100 - (uint16_t)currentControlRateProfile->rollPitchRate * tmp / 500;
             prop1 = (uint16_t)prop1 * prop2 / 100;
-        }
-        if (axis == YAW) {
+        } else if (axis == YAW) {
             if (currentProfile->yaw_deadband) {
                 if (tmp > currentProfile->yaw_deadband) {
                     tmp -= currentProfile->yaw_deadband;
@@ -200,7 +199,7 @@ void annexCode(void)
                 }
             }
             rcCommand[axis] = tmp * -masterConfig.yaw_control_direction;
-            prop1 = 100 - (uint16_t)currentProfile->controlRateConfig.yawRate * abs(tmp) / 500;
+            prop1 = 100 - (uint16_t)currentControlRateProfile->yawRate * abs(tmp) / 500;
         }
         // FIXME axis indexes into pids.  use something like lookupPidIndex(rc_alias_e alias) to reduce coupling.
         dynP8[axis] = (uint16_t)currentProfile->pidProfile.P8[axis] * prop1 / 100;
@@ -246,7 +245,7 @@ void annexCode(void)
     if (ARMING_FLAG(ARMED)) {
         LED0_ON;
     } else {
-        if (rcOptions[BOXARM] == 0) {
+        if (IS_RC_MODE_ACTIVE(BOXARM) == 0) {
             ENABLE_ARMING_FLAG(OK_TO_ARM);
         }
 
@@ -259,7 +258,7 @@ void annexCode(void)
             DISABLE_ARMING_FLAG(OK_TO_ARM);
         }
 
-        if (rcOptions[BOXAUTOTUNE]) {
+        if (IS_RC_MODE_ACTIVE(BOXAUTOTUNE)) {
             DISABLE_ARMING_FLAG(OK_TO_ARM);
         }
 
@@ -333,20 +332,20 @@ void handleInflightCalibrationStickPosition(void)
     } else {
         AccInflightCalibrationArmed = !AccInflightCalibrationArmed;
         if (AccInflightCalibrationArmed) {
-            queueConfirmationBeep(2);
+            queueConfirmationBeep(4);
         } else {
-            queueConfirmationBeep(3);
+            queueConfirmationBeep(6);
         }
     }
 }
 
 void updateInflightCalibrationState(void)
 {
-    if (AccInflightCalibrationArmed && ARMING_FLAG(ARMED) && rcData[THROTTLE] > masterConfig.rxConfig.mincheck && !rcOptions[BOXARM]) {   // Copter is airborne and you are turning it off via boxarm : start measurement
+    if (AccInflightCalibrationArmed && ARMING_FLAG(ARMED) && rcData[THROTTLE] > masterConfig.rxConfig.mincheck && !IS_RC_MODE_ACTIVE(BOXARM)) {   // Copter is airborne and you are turning it off via boxarm : start measurement
         InflightcalibratingA = 50;
         AccInflightCalibrationArmed = false;
     }
-    if (rcOptions[BOXCALIB]) {      // Use the Calib Option to activate : Calib = TRUE Meausrement started, Land and Calib = 0 measurement stored
+    if (IS_RC_MODE_ACTIVE(BOXCALIB)) {      // Use the Calib Option to activate : Calib = TRUE Meausrement started, Land and Calib = 0 measurement stored
         if (!AccInflightCalibrationActive && !AccInflightCalibrationMeasurementDone)
             InflightcalibratingA = 50;
         AccInflightCalibrationActive = true;
@@ -377,10 +376,12 @@ typedef enum {
 #endif
 #ifdef BARO
     UPDATE_BARO_TASK,
-    CALCULATE_ALTITUDE_TASK,
 #endif
 #ifdef SONAR
     UPDATE_SONAR_TASK,
+#endif
+#if defined(BARO) || defined(SONAR)
+    CALCULATE_ALTITUDE_TASK,
 #endif
     UPDATE_GPS_TASK,
     UPDATE_DISPLAY_TASK
@@ -408,9 +409,20 @@ void executePeriodicTasks(void)
             baroUpdate(currentTime);
         }
         break;
+#endif
 
+#if defined(BARO) || defined(SONAR)
     case CALCULATE_ALTITUDE_TASK:
+
+#if defined(BARO) && !defined(SONAR)
         if (sensors(SENSOR_BARO) && isBaroReady()) {
+#endif
+#if defined(BARO) && defined(SONAR)
+        if ((sensors(SENSOR_BARO) && isBaroReady()) || sensors(SENSOR_SONAR)) {
+#endif
+#if !defined(BARO) && defined(SONAR)
+        if (sensors(SENSOR_SONAR)) {
+#endif
             calculateEstimatedAltitude(currentTime);
         }
         break;
@@ -453,7 +465,7 @@ void processRx(void)
 
     // in 3D mode, we need to be able to disarm by switch at any time
     if (feature(FEATURE_3D)) {
-        if (!rcOptions[BOXARM])
+        if (!IS_RC_MODE_ACTIVE(BOXARM))
             mwDisarm();
     }
 
@@ -475,17 +487,22 @@ void processRx(void)
         resetErrorGyro();
     }
 
-    processRcStickPositions(&masterConfig.rxConfig, throttleStatus, currentProfile->activate, masterConfig.retarded_arm, masterConfig.disarm_kill_switch);
+    processRcStickPositions(&masterConfig.rxConfig, throttleStatus, masterConfig.retarded_arm, masterConfig.disarm_kill_switch);
 
     if (feature(FEATURE_INFLIGHT_ACC_CAL)) {
         updateInflightCalibrationState();
     }
 
-    updateRcOptions(currentProfile->activate);
+    updateActivatedModes(currentProfile->modeActivationConditions);
+
+    if (!cliMode) {
+        updateAdjustmentStates(currentProfile->adjustmentRanges);
+        processRcAdjustments(currentControlRateProfile, &masterConfig.rxConfig);
+    }
 
     bool canUseHorizonMode = true;
 
-    if ((rcOptions[BOXANGLE] || (feature(FEATURE_FAILSAFE) && failsafe->vTable->hasTimerElapsed())) && (sensors(SENSOR_ACC))) {
+    if ((IS_RC_MODE_ACTIVE(BOXANGLE) || (feature(FEATURE_FAILSAFE) && failsafe->vTable->hasTimerElapsed())) && (sensors(SENSOR_ACC))) {
         // bumpless transfer to Level mode
     	canUseHorizonMode = false;
 
@@ -497,7 +514,7 @@ void processRx(void)
         DISABLE_FLIGHT_MODE(ANGLE_MODE); // failsafe support
     }
 
-	if (rcOptions[BOXHORIZON] && canUseHorizonMode) {
+	if (IS_RC_MODE_ACTIVE(BOXHORIZON) && canUseHorizonMode) {
 
 		DISABLE_FLIGHT_MODE(ANGLE_MODE);
 
@@ -517,7 +534,7 @@ void processRx(void)
 
 #ifdef  MAG
     if (sensors(SENSOR_ACC) || sensors(SENSOR_MAG)) {
-        if (rcOptions[BOXMAG]) {
+        if (IS_RC_MODE_ACTIVE(BOXMAG)) {
             if (!FLIGHT_MODE(MAG_MODE)) {
                 ENABLE_FLIGHT_MODE(MAG_MODE);
                 magHold = heading;
@@ -525,14 +542,14 @@ void processRx(void)
         } else {
             DISABLE_FLIGHT_MODE(MAG_MODE);
         }
-        if (rcOptions[BOXHEADFREE]) {
+        if (IS_RC_MODE_ACTIVE(BOXHEADFREE)) {
             if (!FLIGHT_MODE(HEADFREE_MODE)) {
                 ENABLE_FLIGHT_MODE(HEADFREE_MODE);
             }
         } else {
             DISABLE_FLIGHT_MODE(HEADFREE_MODE);
         }
-        if (rcOptions[BOXHEADADJ]) {
+        if (IS_RC_MODE_ACTIVE(BOXHEADADJ)) {
             headFreeModeHold = heading; // acquire new heading
         }
     }
@@ -544,7 +561,7 @@ void processRx(void)
     }
 #endif
 
-    if (rcOptions[BOXPASSTHRU]) {
+    if (IS_RC_MODE_ACTIVE(BOXPASSTHRU)) {
         ENABLE_FLIGHT_MODE(PASSTHRU_MODE);
     } else {
         DISABLE_FLIGHT_MODE(PASSTHRU_MODE);
@@ -558,7 +575,7 @@ void processRx(void)
 void loop(void)
 {
     static uint32_t loopTime;
-#ifdef BARO
+#if defined(BARO) || defined(SONAR)
     static bool haveProcessedAnnexCodeOnce = false;
 #endif
 
@@ -575,6 +592,16 @@ void loop(void)
             }
         }
 #endif
+
+#ifdef SONAR
+        // the 'annexCode' initialses rcCommand, updateAltHoldState depends on valid rcCommand data.
+        if (haveProcessedAnnexCodeOnce) {
+            if (sensors(SENSOR_SONAR)) {
+                updateSonarAltHoldState();
+            }
+        }
+#endif
+
     } else {
         // not processing rx this iteration
         executePeriodicTasks();
@@ -592,7 +619,7 @@ void loop(void)
         previousTime = currentTime;
 
         annexCode();
-#ifdef BARO
+#if defined(BARO) || defined(SONAR)
         haveProcessedAnnexCodeOnce = true;
 #endif
 
@@ -606,13 +633,12 @@ void loop(void)
         }
 #endif
 
-#ifdef BARO
-        if (sensors(SENSOR_BARO)) {
-            if (FLIGHT_MODE(BARO_MODE)) {
-                updateAltHold();
+#if defined(BARO) || defined(SONAR)
+        if (sensors(SENSOR_BARO) || sensors(SENSOR_SONAR)) {
+            if (FLIGHT_MODE(BARO_MODE) || FLIGHT_MODE(SONAR_MODE)) {
+                applyAltHold();
             }
         }
-
 #endif
 
         if (currentProfile->throttle_correction_value && (FLIGHT_MODE(ANGLE_MODE) || FLIGHT_MODE(HORIZON_MODE))) {
@@ -629,10 +655,10 @@ void loop(void)
 
         // PID - note this is function pointer set by setPIDController()
         pid_controller(
-			&currentProfile->pidProfile,
-			&currentProfile->controlRateConfig,
-			masterConfig.max_angle_inclination,
-			&currentProfile->accelerometerTrims
+            &currentProfile->pidProfile,
+            currentControlRateProfile,
+            masterConfig.max_angle_inclination,
+            &currentProfile->accelerometerTrims
         );
 
         mixTable();

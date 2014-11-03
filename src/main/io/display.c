@@ -45,6 +45,8 @@
 
 #include "config/runtime_config.h"
 
+#include "config/config.h"
+
 #include "display.h"
 
 #define MILLISECONDS_IN_A_SECOND (1000 * 1000)
@@ -56,7 +58,7 @@ static uint32_t nextDisplayUpdateAt = 0;
 
 static rxConfig_t *rxConfig;
 
-static char lineBuffer[SCREEN_CHARACTER_COLUMN_COUNT];
+static char lineBuffer[SCREEN_CHARACTER_COLUMN_COUNT + 1];
 
 typedef enum {
     PAGE_WELCOME,
@@ -64,6 +66,7 @@ typedef enum {
     PAGE_BATTERY,
     PAGE_SENSORS,
     PAGE_RX,
+    PAGE_PROFILE,
 } pageId_e;
 
 const char* pageTitles[] = {
@@ -71,12 +74,14 @@ const char* pageTitles[] = {
     "ARMED",
     "BATTERY",
     "SENSORS",
-    "RX"
+    "RX",
+    "PROFILE"
 };
 
 #define PAGE_COUNT (PAGE_RX + 1)
 
 const uint8_t cyclePageIds[] = {
+    PAGE_PROFILE,
     PAGE_BATTERY,
     PAGE_SENSORS,
     PAGE_RX
@@ -211,6 +216,17 @@ void showArmedPage(void)
 {
 }
 
+void showProfilePage(void)
+{
+    tfp_sprintf(lineBuffer, "Profile: %d", getCurrentProfile());
+    i2c_OLED_set_line(1);
+    i2c_OLED_send_string(lineBuffer);
+
+    tfp_sprintf(lineBuffer, "Rate profile: %d", getCurrentControlRateProfile());
+    i2c_OLED_set_line(2);
+    i2c_OLED_send_string(lineBuffer);
+}
+
 void showBatteryPage(void)
 {
     tfp_sprintf(lineBuffer, "Volts: %d.%d, Cells: %d", vbat / 10, vbat % 10, batteryCellCount);
@@ -248,7 +264,7 @@ void showSensorsPage(void)
         i2c_OLED_set_line(rowIndex++);
         i2c_OLED_send_string(lineBuffer);
     }
-    #endif
+#endif
 }
 
 void updateDisplay(void)
@@ -310,6 +326,9 @@ void updateDisplay(void)
         case PAGE_RX:
             showRxPage();
             break;
+        case PAGE_PROFILE:
+            showProfilePage();
+            break;
     }
     if (!armedState) {
         updateTicker();
@@ -337,6 +356,7 @@ void displaySetNextPageChangeAt(uint32_t futureMicros) {
 
 void displayEnablePageCycling(void) {
     pageState.pageFlags |= PAGE_STATE_FLAG_CYCLE_ENABLED;
+    pageState.cycleIndex = CYCLE_PAGE_ID_COUNT - 1; // start at first page
 }
 
 void displayDisablePageCycling(void) {

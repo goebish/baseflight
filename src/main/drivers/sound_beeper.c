@@ -61,21 +61,13 @@ void systemBeep(bool onoff)
 #endif
 }
 
-static inline bool isBeeperOutputInverted(void)
+void beeperInit(beeperConfig_t *config)
 {
-#ifdef BEEPER_INVERTED
-    return true;
+#ifndef BEEPER
+    UNUSED(config);
 #else
-    // Naze rev5 needs inverted beeper.
-    return hse_value == 12000000;
-#endif
-}
-
-void beeperInit(void)
-{
-#ifdef BEEPER
-    initBeeperHardware();
-    if (isBeeperOutputInverted())
+    initBeeperHardware(config);
+    if (config->isInverted)
         systemBeepPtr = beepInverted;
     else
         systemBeepPtr = beepNormal;

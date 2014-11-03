@@ -22,10 +22,7 @@ typedef struct profile_s {
 
     pidProfile_t pidProfile;
 
-    controlRateConfig_t controlRateConfig;
-
-    uint8_t dynThrPID;
-    uint16_t tpa_breakpoint;                // Breakpoint where TPA is activated
+    uint8_t defaultRateProfileIndex;
 
     int16_t mag_declination;                // Get your magnetic decliniation from here : http://magnetic-declination.com/
                                             // For example, -6deg 37min, = -637 Japan, format is [sign]dddmm (degreesminutes) default is zero.
@@ -42,7 +39,9 @@ typedef struct profile_s {
 
     uint8_t acc_unarmedcal;                 // turn automatic acc compensation on/off
 
-    uint32_t activate[CHECKBOX_ITEM_COUNT]; // activate switches, bitmask, 3 bits per channel, lower 16 bits aux1-4, upper 16 bits aux 5-8
+    modeActivationCondition_t modeActivationConditions[MAX_MODE_ACTIVATION_CONDITION_COUNT];
+
+    adjustmentRange_t adjustmentRanges[MAX_ADJUSTMENT_RANGE_COUNT];
 
     // Radio/ESC-related configuration
     uint8_t deadband;                       // introduce a deadband around the stick center for pitch and roll axis. Must be greater than zero.

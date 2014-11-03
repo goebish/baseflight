@@ -27,6 +27,8 @@
 #include "config/config.h"
 #include "config/runtime_config.h"
 
+#include "drivers/system.h"
+
 #include "flight/flight.h"
 
 #include "drivers/accgyro.h"
@@ -36,21 +38,22 @@
 #include "sensors/acceleration.h"
 
 #include "io/gps.h"
+#include "io/beeper.h"
 #include "mw.h"
 
 #include "rx/rx.h"
+#include "io/escservo.h"
 #include "io/rc_controls.h"
+#include "io/rc_curves.h"
+
+static escAndServoConfig_t *escAndServoConfig;
+static pidProfile_t *pidProfile;
+
+static bool isUsingSticksToArm = true;
 
 int16_t rcCommand[4];           // interval [1000;2000] for THROTTLE and [-500;+500] for ROLL/PITCH/YAW
 
-// each entry in the array is a bitmask, 3 bits per aux channel (only aux 1 to 4), aux1 is first, each bit corresponds to an rc channel reading
-// bit 1 - stick LOW
-// bit 2 - stick MIDDLE
-// bit 3 - stick HIGH
-// an option is enabled when ANY channel has an appropriate reading corresponding to the bit.
-// an option is disabled when NO channel has an appropriate reading corresponding to the bit.
-// example: 110000000001 - option is only enabled when AUX1 is LOW or AUX4 is MEDIUM or HIGH.
-uint8_t rcOptions[CHECKBOX_ITEM_COUNT];
+uint32_t rcModeActivationMask; // one bit per mode defined in boxId_e
 
 bool areSticksInApModePosition(uint16_t ap_mode)
 {
@@ -67,7 +70,9 @@ throttleStatus_e calculateThrottleStatus(rxConfig_t *rxConfig, uint16_t deadband
     return THROTTLE_HIGH;
 }
 
-void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, uint32_t *activate, bool retarded_arm, bool disarm_kill_switch)
+
+
+void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStatus, bool retarded_arm, bool disarm_kill_switch)
 {
     static uint8_t rcDelayCommand;      // this indicates the number of time (multiple of RC measurement at 50Hz) the sticks must be maintained to run or switch off motors
     static uint8_t rcSticks;            // this hold sticks position for command combos
@@ -91,9 +96,9 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
     rcSticks = stTmp;
 
     // perform actions
-    if (activate[BOXARM] > 0) {
+    if (!isUsingSticksToArm) {
 
-        if (rcOptions[BOXARM]) {
+        if (IS_RC_MODE_ACTIVE(BOXARM)) {
             // Arming via ARM BOX
             if (throttleStatus == THROTTLE_LOW) {
                 if (ARMING_FLAG(OK_TO_ARM)) {
@@ -119,14 +124,15 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
     if (ARMING_FLAG(ARMED)) {
         // actions during armed
 
-        // Disarm on throttle down + yaw
-        if (activate[BOXARM] == 0 && (rcSticks == THR_LO + YAW_LO + PIT_CE + ROL_CE))
-            mwDisarm();
+        if (isUsingSticksToArm) {
+            // Disarm on throttle down + yaw
+            if (rcSticks == THR_LO + YAW_LO + PIT_CE + ROL_CE)
+                mwDisarm();
 
-        // Disarm on roll (only when retarded_arm is enabled)
-        if (retarded_arm && activate[BOXARM] == 0 && (rcSticks == THR_LO + YAW_CE + PIT_CE + ROL_LO))
-            mwDisarm();
-
+            // Disarm on roll (only when retarded_arm is enabled)
+            if (retarded_arm && (rcSticks == THR_LO + YAW_CE + PIT_CE + ROL_LO))
+                mwDisarm();
+        }
         return;
     }
 
@@ -172,16 +178,23 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
         return;
     }
 
-    if (activate[BOXARM] == 0 && (rcSticks == THR_LO + YAW_HI + PIT_CE + ROL_CE)) {
-        // Arm via YAW
-        mwArm();
-        return;
+    if (rcSticks == THR_LO + YAW_LO + PIT_LO + ROL_HI) {
+        saveConfigAndNotify();
     }
 
-    if (retarded_arm && activate[BOXARM] == 0 && (rcSticks == THR_LO + YAW_CE + PIT_CE + ROL_HI)) {
-        // Arm via ROLL
-        mwArm();
-        return;
+    if (isUsingSticksToArm) {
+
+        if (rcSticks == THR_LO + YAW_HI + PIT_CE + ROL_CE) {
+            // Arm via YAW
+            mwArm();
+            return;
+        }
+
+        if (retarded_arm && (rcSticks == THR_LO + YAW_CE + PIT_CE + ROL_HI)) {
+            // Arm via ROLL
+            mwArm();
+            return;
+        }
     }
 
     if (rcSticks == THR_HI + YAW_LO + PIT_LO + ROL_CE) {
@@ -224,42 +237,285 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
     }
 }
 
-#define MAX_AUX_STATE_CHANNELS 8
-
-void updateRcOptions(uint32_t *activate)
-{
-    // auxState is a bitmask, 3 bits per channel.
-    // lower 16 bits contain aux 4 to 1 (msb to lsb)
-    // upper 16 bits contain aux 8 to 5 (msb to lsb)
-    //
-    // the three bits are as follows:
-    // bit 1 is SET when the stick is less than 1300
-    // bit 2 is SET when the stick is between 1300 and 1700
-    // bit 3 is SET when the stick is above 1700
-
-    // if the value is 1300 or 1700 NONE of the three bits are set.
-
-    int i;
-    uint32_t auxState = 0;
-    uint8_t shift = 0;
-    int8_t chunkOffset = 0;
-
-    for (i = 0; i < rxRuntimeConfig.auxChannelCount && i < MAX_AUX_STATE_CHANNELS; i++) {
-        if (i > 0 && i % 4 == 0) {
-            chunkOffset -= 4;
-            shift += 16;
-        }
-
-        uint8_t bitIndex = 3 * (i + chunkOffset);
-
-        uint32_t temp =
-                (rcData[AUX1 + i] < 1300) << bitIndex |
-                (1300 < rcData[AUX1 + i] && rcData[AUX1 + i] < 1700) << (bitIndex + 1) |
-                (rcData[AUX1 + i] > 1700) << (bitIndex + 2);
-
-        auxState |= temp << shift;
+bool isRangeActive(uint8_t auxChannelIndex, channelRange_t *range) {
+    if (!IS_RANGE_USABLE(range)) {
+        return false;
     }
 
-    for (i = 0; i < CHECKBOX_ITEM_COUNT; i++)
-        rcOptions[i] = (auxState & activate[i]) > 0;
+    uint16_t channelValue = constrain(rcData[auxChannelIndex + NON_AUX_CHANNEL_COUNT], CHANNEL_RANGE_MIN, CHANNEL_RANGE_MAX - 1);
+    return (channelValue >= 900 + (range->startStep * 25) &&
+            channelValue < 900 + (range->endStep * 25));
+}
+
+void updateActivatedModes(modeActivationCondition_t *modeActivationConditions)
+{
+    rcModeActivationMask = 0;
+
+    uint8_t index;
+
+    for (index = 0; index < MAX_MODE_ACTIVATION_CONDITION_COUNT; index++) {
+        modeActivationCondition_t *modeActivationCondition = &modeActivationConditions[index];
+
+        if (isRangeActive(modeActivationCondition->auxChannelIndex, &modeActivationCondition->range)) {
+            ACTIVATE_RC_MODE(modeActivationCondition->modeId);
+        }
+    }
+}
+
+uint8_t adjustmentStateMask = 0;
+
+#define MARK_ADJUSTMENT_FUNCTION_AS_BUSY(adjustmentIndex) adjustmentStateMask |= (1 << adjustmentIndex)
+#define MARK_ADJUSTMENT_FUNCTION_AS_READY(adjustmentIndex) adjustmentStateMask &= ~(1 << adjustmentIndex)
+
+#define IS_ADJUSTMENT_FUNCTION_BUSY(adjustmentIndex) (adjustmentStateMask & (1 << adjustmentIndex))
+
+// sync with adjustmentFunction_e
+static const adjustmentConfig_t defaultAdjustmentConfigs[ADJUSTMENT_FUNCTION_COUNT - 1] = {
+    {
+        .adjustmentFunction = ADJUSTMENT_RC_RATE,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_RC_EXPO,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_THROTTLE_EXPO,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_PITCH_ROLL_RATE,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_YAW_RATE,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_PITCH_ROLL_P,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_PITCH_ROLL_I,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_PITCH_ROLL_D,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_YAW_P,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_YAW_I,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_YAW_D,
+        .mode = ADJUSTMENT_MODE_STEP,
+        .data.stepConfig.step = 1
+    },
+    {
+        .adjustmentFunction = ADJUSTMENT_RATE_PROFILE,
+        .mode = ADJUSTMENT_MODE_SELECT,
+        .data.selectConfig.switchPositions = 3
+    }
+};
+
+#define ADJUSTMENT_FUNCTION_CONFIG_INDEX_OFFSET 1
+
+adjustmentState_t adjustmentStates[MAX_SIMULTANEOUS_ADJUSTMENT_COUNT];
+
+void configureAdjustment(uint8_t index, uint8_t auxSwitchChannelIndex, const adjustmentConfig_t *adjustmentConfig) {
+    adjustmentState_t *adjustmentState = &adjustmentStates[index];
+
+    if (adjustmentState->config == adjustmentConfig) {
+        // already configured
+        return;
+    }
+    adjustmentState->auxChannelIndex = auxSwitchChannelIndex;
+    adjustmentState->config = adjustmentConfig;
+    adjustmentState->timeoutAt = 0;
+
+    MARK_ADJUSTMENT_FUNCTION_AS_READY(index);
+}
+
+void applyStepAdjustment(controlRateConfig_t *controlRateConfig, uint8_t adjustmentFunction, int delta) {
+    int newValue;
+
+    if (delta > 0) {
+        queueConfirmationBeep(2);
+    } else {
+        queueConfirmationBeep(1);
+    }
+    switch(adjustmentFunction) {
+        case ADJUSTMENT_RC_RATE:
+            newValue = (int)controlRateConfig->rcRate8 + delta;
+            controlRateConfig->rcRate8 = constrain(newValue, 0, 250); // FIXME magic numbers repeated in serial_cli.c
+            generatePitchRollCurve(controlRateConfig);
+        break;
+        case ADJUSTMENT_RC_EXPO:
+            newValue = (int)controlRateConfig->rcExpo8 + delta;
+            controlRateConfig->rcExpo8 = constrain(newValue, 0, 100); // FIXME magic numbers repeated in serial_cli.c
+            generatePitchRollCurve(controlRateConfig);
+            break;
+        case ADJUSTMENT_THROTTLE_EXPO:
+            newValue = (int)controlRateConfig->thrExpo8 + delta;
+            controlRateConfig->thrExpo8 = constrain(newValue, 0, 100); // FIXME magic numbers repeated in serial_cli.c
+            generateThrottleCurve(controlRateConfig, escAndServoConfig);
+            break;
+        case ADJUSTMENT_PITCH_ROLL_RATE:
+            newValue = (int)controlRateConfig->rollPitchRate + delta;
+            controlRateConfig->rollPitchRate = constrain(newValue, 0, 100); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_YAW_RATE:
+            newValue = (int)controlRateConfig->yawRate + delta;
+            controlRateConfig->yawRate = constrain(newValue, 0, 100); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_PITCH_ROLL_P:
+            newValue = (int)pidProfile->P8[PIDPITCH] + delta;
+            pidProfile->P8[PIDPITCH] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            newValue = (int)pidProfile->P8[PIDROLL] + delta;
+            pidProfile->P8[PIDROLL] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_PITCH_ROLL_I:
+            newValue = (int)pidProfile->I8[PIDPITCH] + delta;
+            pidProfile->I8[PIDPITCH] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            newValue = (int)pidProfile->I8[PIDROLL] + delta;
+            pidProfile->I8[PIDROLL] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_PITCH_ROLL_D:
+            newValue = (int)pidProfile->D8[PIDPITCH] + delta;
+            pidProfile->D8[PIDPITCH] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            newValue = (int)pidProfile->D8[PIDROLL] + delta;
+            pidProfile->D8[PIDROLL] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_YAW_P:
+            newValue = (int)pidProfile->P8[PIDYAW] + delta;
+            pidProfile->P8[PIDYAW] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_YAW_I:
+            newValue = (int)pidProfile->I8[PIDYAW] + delta;
+            pidProfile->I8[PIDYAW] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        case ADJUSTMENT_YAW_D:
+            newValue = (int)pidProfile->D8[PIDYAW] + delta;
+            pidProfile->D8[PIDYAW] = constrain(newValue, 0, 200); // FIXME magic numbers repeated in serial_cli.c
+            break;
+        default:
+            break;
+    };
+}
+
+void changeControlRateProfile(uint8_t profileIndex);
+
+void applySelectAdjustment(uint8_t adjustmentFunction, uint8_t position) {
+
+    queueConfirmationBeep(position + 1);
+    switch(adjustmentFunction) {
+        case ADJUSTMENT_RATE_PROFILE:
+            if (getCurrentControlRateProfile() != position) {
+                changeControlRateProfile(position);
+            }
+            break;
+    }
+}
+
+#define RESET_FREQUENCY_2HZ (1000 / 2)
+
+void processRcAdjustments(controlRateConfig_t *controlRateConfig, rxConfig_t *rxConfig)
+{
+    uint8_t adjustmentIndex;
+    uint32_t now = millis();
+
+    for (adjustmentIndex = 0; adjustmentIndex < MAX_SIMULTANEOUS_ADJUSTMENT_COUNT; adjustmentIndex++) {
+        adjustmentState_t *adjustmentState = &adjustmentStates[adjustmentIndex];
+
+        if (!adjustmentState->config) {
+            continue;
+        }
+        uint8_t adjustmentFunction = adjustmentState->config->adjustmentFunction;
+        if (adjustmentFunction == ADJUSTMENT_NONE) {
+            continue;
+        }
+
+        int32_t signedDiff = now - adjustmentState->timeoutAt;
+        bool canResetReadyStates = signedDiff >= 0L;
+
+        if (canResetReadyStates) {
+            adjustmentState->timeoutAt = now + RESET_FREQUENCY_2HZ;
+            MARK_ADJUSTMENT_FUNCTION_AS_READY(adjustmentIndex);
+        }
+
+
+        uint8_t channelIndex = NON_AUX_CHANNEL_COUNT + adjustmentState->auxChannelIndex;
+
+        if (adjustmentState->config->mode == ADJUSTMENT_MODE_STEP) {
+            int delta;
+            if (rcData[channelIndex] > rxConfig->midrc + 200) {
+                delta = adjustmentState->config->data.stepConfig.step;
+            } else if (rcData[channelIndex] < rxConfig->midrc - 200) {
+                delta = 0 - adjustmentState->config->data.stepConfig.step;
+            } else {
+                // returning the switch to the middle immediately resets the ready state
+                MARK_ADJUSTMENT_FUNCTION_AS_READY(adjustmentIndex);
+                adjustmentState->timeoutAt = now + RESET_FREQUENCY_2HZ;
+                continue;
+            }
+            if (IS_ADJUSTMENT_FUNCTION_BUSY(adjustmentIndex)) {
+                continue;
+            }
+
+            applyStepAdjustment(controlRateConfig, adjustmentFunction, delta);
+        } else if (adjustmentState->config->mode == ADJUSTMENT_MODE_SELECT) {
+            uint16_t rangeWidth = ((2100 - 900) / adjustmentState->config->data.selectConfig.switchPositions);
+            uint8_t position = (constrain(rcData[channelIndex], 900, 2100 - 1) - 900) / rangeWidth;
+
+            applySelectAdjustment(adjustmentFunction, position);
+        }
+        MARK_ADJUSTMENT_FUNCTION_AS_BUSY(adjustmentIndex);
+    }
+}
+
+void updateAdjustmentStates(adjustmentRange_t *adjustmentRanges)
+{
+    uint8_t index;
+
+    for (index = 0; index < MAX_ADJUSTMENT_RANGE_COUNT; index++) {
+        adjustmentRange_t *adjustmentRange = &adjustmentRanges[index];
+
+        if (isRangeActive(adjustmentRange->auxChannelIndex, &adjustmentRange->range)) {
+
+            const adjustmentConfig_t *adjustmentConfig = &defaultAdjustmentConfigs[adjustmentRange->adjustmentFunction - ADJUSTMENT_FUNCTION_CONFIG_INDEX_OFFSET];
+
+            configureAdjustment(adjustmentRange->adjustmentIndex, adjustmentRange->auxSwitchChannelIndex, adjustmentConfig);
+        }
+    }
+}
+
+void useRcControlsConfig(modeActivationCondition_t *modeActivationConditions, escAndServoConfig_t *escAndServoConfigToUse, pidProfile_t *pidProfileToUse)
+{
+    uint8_t index;
+
+    escAndServoConfig = escAndServoConfigToUse;
+    pidProfile = pidProfileToUse;
+
+    for (index = 0; index < MAX_MODE_ACTIVATION_CONDITION_COUNT; index++) {
+        modeActivationCondition_t *modeActivationCondition = &modeActivationConditions[index];
+        if (modeActivationCondition->modeId == BOXARM && IS_RANGE_USABLE(&modeActivationCondition->range)) {
+            isUsingSticksToArm = false;
+            break;
+        }
+    }
 }

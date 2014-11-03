@@ -556,7 +556,8 @@ void applyLedModeLayer(void)
 typedef enum {
     WARNING_FLAG_NONE = 0,
     WARNING_FLAG_LOW_BATTERY = (1 << 0),
-    WARNING_FLAG_FAILSAFE = (1 << 1)
+    WARNING_FLAG_FAILSAFE = (1 << 1),
+    WARNING_FLAG_ARMING_DISABLED = (1 << 2)
 } warningFlags_e;
 
 void applyLedWarningLayer(uint8_t warningState, uint8_t warningFlags)
@@ -579,22 +580,30 @@ void applyLedWarningLayer(uint8_t warningState, uint8_t warningFlags)
         }
 
         if (warningState == 0) {
-            if (warningFlashCounter == 0 && warningFlags & WARNING_FLAG_LOW_BATTERY) {
+            if (warningFlashCounter == 0 && (warningFlags & WARNING_FLAG_ARMING_DISABLED)) {
+                setLedHsv(ledIndex, &hsv_yellow);
+            }
+            if (warningFlashCounter == 1 && (warningFlags & WARNING_FLAG_LOW_BATTERY)) {
                 setLedHsv(ledIndex, &hsv_red);
             }
-            if (warningFlashCounter > 1 && warningFlags & WARNING_FLAG_FAILSAFE) {
+            if (warningFlashCounter > 1 && (warningFlags & WARNING_FLAG_FAILSAFE)) {
                 setLedHsv(ledIndex, &hsv_lightBlue);
             }
         } else {
-            if (warningFlashCounter == 0 && warningFlags & WARNING_FLAG_LOW_BATTERY) {
+            if (warningFlashCounter == 0 && (warningFlags & WARNING_FLAG_ARMING_DISABLED)) {
                 setLedHsv(ledIndex, &hsv_black);
             }
-            if (warningFlashCounter > 1 && warningFlags & WARNING_FLAG_FAILSAFE) {
+            if (warningFlashCounter == 1 && (warningFlags & WARNING_FLAG_LOW_BATTERY)) {
+                setLedHsv(ledIndex, &hsv_black);
+            }
+            if (warningFlashCounter > 1 && (warningFlags & WARNING_FLAG_FAILSAFE)) {
                 setLedHsv(ledIndex, &hsv_limeGreen);
             }
         }
     }
 }
+
+#define INDICATOR_DEADBAND 25
 
 void applyLedIndicatorLayer(uint8_t indicatorFlashState)
 {
@@ -618,22 +627,22 @@ void applyLedIndicatorLayer(uint8_t indicatorFlashState)
             continue;
         }
 
-        if (rcCommand[ROLL] > 50) {
+        if (rcCommand[ROLL] > INDICATOR_DEADBAND) {
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_NORTH_EAST, flashColor);
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_SOUTH_EAST, flashColor);
         }
 
-        if (rcCommand[ROLL] < -50) {
+        if (rcCommand[ROLL] < -INDICATOR_DEADBAND) {
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_NORTH_WEST, flashColor);
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_SOUTH_WEST, flashColor);
         }
 
-        if (rcCommand[PITCH] > 50) {
+        if (rcCommand[PITCH] > INDICATOR_DEADBAND) {
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_NORTH_EAST, flashColor);
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_NORTH_WEST, flashColor);
         }
 
-        if (rcCommand[PITCH] < -50) {
+        if (rcCommand[PITCH] < -INDICATOR_DEADBAND) {
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_SOUTH_EAST, flashColor);
             applyQuadrantColor(ledIndex, ledConfig, QUADRANT_SOUTH_WEST, flashColor);
         }
@@ -743,6 +752,9 @@ void updateLedStrip(void)
             }
             if (failsafe->vTable->hasTimerElapsed()) {
                 warningFlags |= WARNING_FLAG_FAILSAFE;
+            }
+            if (!ARMING_FLAG(ARMED) && !ARMING_FLAG(OK_TO_ARM)) {
+                warningFlags |= WARNING_FLAG_ARMING_DISABLED;
             }
 
         } else {
@@ -855,8 +867,14 @@ void ledStripInit(ledConfig_t *ledConfigsToUse, hsvColor_t *colorsToUse, failsaf
     ledConfigs = ledConfigsToUse;
     colors = colorsToUse;
     failsafe = failsafeToUse;
+    ledStripInitialised = false;
+}
 
+void ledStripEnable(void)
+{
     reevalulateLedConfig();
     ledStripInitialised = true;
+
+    ws2811LedStripInit();
 }
 #endif

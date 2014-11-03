@@ -15,6 +15,8 @@
  * along with Cleanflight.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#define TARGET_BOARD_IDENTIFIER "CC3D" // CopterControl 3D
+
 #define LED0_GPIO   GPIOB
 #define LED0_PIN    Pin_3 // PB3 (LED)
 #define LED0_PERIPHERAL RCC_APB2Periph_GPIOB
@@ -29,19 +31,28 @@
 #define BEEP_PIN Pin_15 // PA15 (Beeper)
 #define BEEP_PERIPHERAL RCC_APB2Periph_GPIOA
 
+#define MPU6000_CS_GPIO       GPIOA
+#define MPU6000_CS_PIN        GPIO_Pin_4
+#define MPU6000_SPI_INSTANCE  SPI1
+
 #define ACC
+#define USE_ACC_SPI_MPU6000
+
 #define GYRO
+#define USE_GYRO_SPI_MPU6000
+
 #define INVERTER
 #define BEEPER
 
-
-
-// #define SOFT_I2C // enable to test software i2c
-// #define SOFT_I2C_PB1011 // If SOFT_I2C is enabled above, need to define pinout as well (I2C1 = PB67, I2C2 = PB1011)
-// #define SOFT_I2C_PB67
-
 #define USE_USART1
 #define USE_USART3
+#define USE_SOFTSERIAL1
+#define SERIAL_PORT_COUNT 3
+
+#define SOFTSERIAL_1_TIMER TIM3
+#define SOFTSERIAL_1_TIMER_RX_HARDWARE 2 // PWM 3
+#define SOFTSERIAL_1_TIMER_TX_HARDWARE 3 // PWM 4
+
 
 #define USART3_RX_PIN Pin_11
 #define USART3_TX_PIN Pin_10
@@ -49,12 +60,19 @@
 #define USART3_APB1_PERIPHERALS RCC_APB1Periph_USART3
 #define USART3_APB2_PERIPHERALS RCC_APB2Periph_GPIOB
 
-#define SERIAL_PORT_COUNT 2
+
+
+#define USE_SPI
+#define USE_SPI_DEVICE_1
+#define USE_SPI_DEVICE_2
+
 
 #define SENSORS_SET (SENSOR_ACC)
 
 #define GPS
 #define LED_STRIP
+#define LED_STRIP_TIMER TIM3
+
 #define TELEMETRY
 #define SERIAL_RX
 #define AUTOTUNE

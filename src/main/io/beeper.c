@@ -19,6 +19,8 @@
 #include "stdint.h"
 
 #include "platform.h"
+
+#include "drivers/gpio.h"
 #include "drivers/sound_beeper.h"
 #include "drivers/system.h"
 #include "flight/failsafe.h"
@@ -32,11 +34,10 @@
 
 #include "io/beeper.h"
 
-#define DOUBLE_PAUSE_DURATION_MILLIS (LONG_PAUSE_DURATION_MILLIS * 2)
 #define LONG_PAUSE_DURATION_MILLIS 200
+#define DOUBLE_PAUSE_DURATION_MILLIS (LONG_PAUSE_DURATION_MILLIS * 2)
 #define SHORT_PAUSE_DURATION_MILLIS (LONG_PAUSE_DURATION_MILLIS / 4)
 #define MEDIUM_PAUSE_DURATION_MILLIS (LONG_PAUSE_DURATION_MILLIS / 2)
-
 #define SHORT_CONFIRMATION_BEEP_DURATION_MILLIS (SHORT_PAUSE_DURATION_MILLIS / 2)
 
 static uint8_t beeperIsOn = 0, beepDone = 0;
@@ -68,7 +69,7 @@ void beepcodeUpdateState(bool warn_vbat)
     static failsafeBeeperWarnings_e warn_failsafe = FAILSAFE_IDLE;
 
     //=====================  BeeperOn via rcOptions =====================
-    if (rcOptions[BOXBEEPERON]) {       // unconditional beeper on via AUXn switch
+    if (IS_RC_MODE_ACTIVE(BOXBEEPERON)) {       // unconditional beeper on via AUXn switch
         beeperOnBox = 1;
     } else {
         beeperOnBox = 0;
@@ -95,7 +96,7 @@ void beepcodeUpdateState(bool warn_vbat)
 #ifdef GPS
     //===================== GPS fix notification handling =====================
     if (sensors(SENSOR_GPS)) {
-        if ((rcOptions[BOXGPSHOME] || rcOptions[BOXGPSHOLD]) && !STATE(GPS_FIX)) {     // if no fix and gps funtion is activated: do warning beeps
+        if ((IS_RC_MODE_ACTIVE(BOXGPSHOME) || IS_RC_MODE_ACTIVE(BOXGPSHOLD)) && !STATE(GPS_FIX)) {     // if no fix and gps funtion is activated: do warning beeps
             warn_noGPSfix = 1;
         } else {
             warn_noGPSfix = 0;
@@ -121,7 +122,7 @@ void beepcodeUpdateState(bool warn_vbat)
     else if (FLIGHT_MODE(AUTOTUNE_MODE))
         beep_code('S','M','S','M');
     else if (toggleBeep > 0)
-        beep(50);                                   // fast confirmation beep
+        beep(SHORT_CONFIRMATION_BEEP_DURATION_MILLIS);  // fast confirmation beep
     else {
         beeperIsOn = 0;
         BEEP_OFF;
