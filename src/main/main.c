@@ -139,6 +139,34 @@ void productionDebug(void)
 }
 #endif
 
+
+#ifdef LASERGAME
+// TODO: move all this crap elsewhere once tested
+void initLaserOutput()
+{
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+    // laser output hardcoded to CH2 (PA1)
+    GPIO_InitTypeDef GPIO_InitStructure;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    digitalLo(GPIOA, GPIO_Pin_1);
+}
+
+void manageLaserOutput()
+{
+    if(rcData[AUX3] > 1530)
+    {
+        digitalHi(GPIOA, GPIO_Pin_1);
+    }
+    else
+    {
+        digitalLo(GPIOA, GPIO_Pin_1);
+    }
+}
+#endif // LASERGAME
+
 void init(void)
 {
     uint8_t i;
@@ -343,6 +371,10 @@ void init(void)
     if (feature(FEATURE_LED_STRIP)) {
         ledStripEnable();
     }
+#endif
+
+#ifdef LASERGAME
+    initLaserOutput();
 #endif
 
 #ifdef TELEMETRY

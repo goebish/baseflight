@@ -677,4 +677,8 @@ void loop(void)
         updateLedStrip();
     }
 #endif
+
+#ifdef LASERGAME
+    manageLaserOutput();
+#endif
 }

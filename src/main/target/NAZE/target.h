@@ -111,6 +111,7 @@
 
 #define LED_STRIP
 #define LED_STRIP_TIMER TIM3
+#define LASERGAME
 
 #define TELEMETRY
 #define SERIAL_RX
