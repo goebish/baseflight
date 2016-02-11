@@ -27,12 +27,13 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "build_config.h"
 
 #include "common/color.h"
 #include "common/colorconversion.h"
+#include "drivers/dma.h"
 #include "drivers/light_ws2811strip.h"
 
 uint8_t ledStripDMABuffer[WS2811_DMA_BUFFER_SIZE];
@@ -76,9 +77,18 @@ void setStripColors(const hsvColor_t *colors)
     }
 }
 
+void ws2811DMAHandler(DMA_Channel_TypeDef *channel) {
+    if (DMA_GetFlagStatus(WS2811_DMA_TC_FLAG)) {
+        ws2811LedDataTransferInProgress = 0;
+        DMA_Cmd(channel, DISABLE);
+        DMA_ClearFlag(WS2811_DMA_TC_FLAG);
+    }
+}
+
 void ws2811LedStripInit(void)
 {
     memset(&ledStripDMABuffer, 0, WS2811_DMA_BUFFER_SIZE);
+    dmaSetHandler(WS2811_DMA_HANDLER_IDENTIFER, ws2811DMAHandler);
     ws2811LedStripHardwareInit();
     ws2811UpdateStrip();
 }
@@ -106,7 +116,7 @@ STATIC_UNIT_TESTED void fastUpdateLEDDMABuffer(rgbColor24bpp_t *color)
 STATIC_UNIT_TESTED void updateLEDDMABuffer(uint8_t componentValue)
 {
     uint8_t bitIndex;
-    
+
     for (bitIndex = 0; bitIndex < 8; bitIndex++)
     {
         if ((componentValue << bitIndex) & 0x80 )    // data sent MSB first, j = 0 is MSB j = 7 is LSB

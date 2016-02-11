@@ -37,45 +37,18 @@ static bool isBoardAlignmentStandard(boardAlignment_t *boardAlignment)
 
 void initBoardAlignment(boardAlignment_t *boardAlignment)
 {
-    float roll, pitch, yaw;
-    float cosx, sinx, cosy, siny, cosz, sinz;
-    float coszcosx, coszcosy, sinzcosx, coszsinx, sinzsinx;
-
     if (isBoardAlignmentStandard(boardAlignment)) {
         return;
     }
 
     standardBoardAlignment = false;
 
-    roll = degreesToRadians(boardAlignment->rollDegrees);
-    pitch = degreesToRadians(boardAlignment->pitchDegrees);
-    yaw = degreesToRadians(boardAlignment->yawDegrees);
+    fp_angles_t rotationAngles;
+    rotationAngles.angles.roll  = degreesToRadians(boardAlignment->rollDegrees );
+    rotationAngles.angles.pitch = degreesToRadians(boardAlignment->pitchDegrees);
+    rotationAngles.angles.yaw   = degreesToRadians(boardAlignment->yawDegrees  );
 
-    cosx = cosf(roll);
-    sinx = sinf(roll);
-    cosy = cosf(pitch);
-    siny = sinf(pitch);
-    cosz = cosf(yaw);
-    sinz = sinf(yaw);
-
-    coszcosx = cosz * cosx;
-    coszcosy = cosz * cosy;
-    sinzcosx = sinz * cosx;
-    coszsinx = sinx * cosz;
-    sinzsinx = sinx * sinz;
-
-    // define rotation matrix
-    boardRotation[0][0] = coszcosy;
-    boardRotation[0][1] = -cosy * sinz;
-    boardRotation[0][2] = siny;
-
-    boardRotation[1][0] = sinzcosx + (coszsinx * siny);
-    boardRotation[1][1] = coszcosx - (sinzsinx * siny);
-    boardRotation[1][2] = -sinx * cosy;
-
-    boardRotation[2][0] = (sinzsinx) - (coszcosx * siny);
-    boardRotation[2][1] = (coszsinx) + (sinzcosx * siny);
-    boardRotation[2][2] = cosy * cosx;
+    buildRotationMatrix(&rotationAngles, boardRotation);
 }
 
 static void alignBoard(int16_t *vec)
@@ -84,9 +57,9 @@ static void alignBoard(int16_t *vec)
     int16_t y = vec[Y];
     int16_t z = vec[Z];
 
-    vec[X] = lrintf(boardRotation[0][0] * x + boardRotation[1][0] * y + boardRotation[2][0] * z);
-    vec[Y] = lrintf(boardRotation[0][1] * x + boardRotation[1][1] * y + boardRotation[2][1] * z);
-    vec[Z] = lrintf(boardRotation[0][2] * x + boardRotation[1][2] * y + boardRotation[2][2] * z);
+    vec[X] = lrintf(boardRotation[0][X] * x + boardRotation[1][X] * y + boardRotation[2][X] * z);
+    vec[Y] = lrintf(boardRotation[0][Y] * x + boardRotation[1][Y] * y + boardRotation[2][Y] * z);
+    vec[Z] = lrintf(boardRotation[0][Z] * x + boardRotation[1][Z] * y + boardRotation[2][Z] * z);
 }
 
 void alignSensors(int16_t *src, int16_t *dest, uint8_t rotation)
@@ -95,6 +68,7 @@ void alignSensors(int16_t *src, int16_t *dest, uint8_t rotation)
     memcpy(swap, src, sizeof(swap));
 
     switch (rotation) {
+        default:
         case CW0_DEG:
             dest[X] = swap[X];
             dest[Y] = swap[Y];
@@ -135,31 +109,8 @@ void alignSensors(int16_t *src, int16_t *dest, uint8_t rotation)
             dest[Y] = -swap[X];
             dest[Z] = -swap[Z];
             break;
-        default:
-            break;
     }
 
     if (!standardBoardAlignment)
         alignBoard(dest);
 }
-
-#ifdef PROD_DEBUG
-void productionDebug(void)
-{
-    gpio_config_t gpio;
-
-    // remap PB6 to USART1_TX
-    gpio.pin = Pin_6;
-    gpio.mode = Mode_AF_PP;
-    gpio.speed = Speed_2MHz;
-    gpioInit(GPIOB, &gpio);
-    gpioPinRemapConfig(AFIO_MAPR_USART1_REMAP, true);
-    serialInit(mcfg.serial_baudrate);
-    delay(25);
-    serialPrint(core.mainport, "DBG ");
-    printf("%08x%08x%08x OK\n", U_ID_0, U_ID_1, U_ID_2);
-    serialPrint(core.mainport, "EOF");
-    delay(25);
-    gpioPinRemapConfig(AFIO_MAPR_USART1_REMAP, false);
-}
-#endif

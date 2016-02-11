@@ -23,7 +23,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #ifdef TELEMETRY
 
@@ -31,32 +31,46 @@
 #include "common/axis.h"
 
 #include "drivers/system.h"
+#include "drivers/sensor.h"
 #include "drivers/accgyro.h"
 #include "drivers/gpio.h"
 #include "drivers/timer.h"
 #include "drivers/serial.h"
-#include "io/serial.h"
-#include "rx/rx.h"
+
 #include "io/rc_controls.h"
+
+#include "sensors/sensors.h"
+#include "sensors/acceleration.h"
+#include "sensors/gyro.h"
+#include "sensors/barometer.h"
+#include "sensors/battery.h"
+
+#include "io/serial.h"
+#include "io/gps.h"
+
+#include "flight/mixer.h"
+#include "flight/pid.h"
+#include "flight/imu.h"
+#include "flight/altitudehold.h"
 
 #include "config/runtime_config.h"
 #include "config/config.h"
 
-#include "sensors/sensors.h"
-#include "sensors/gyro.h"
-#include "sensors/barometer.h"
-#include "sensors/battery.h"
-#include "flight/flight.h"
-#include "io/gps.h"
-
 #include "telemetry/telemetry.h"
 #include "telemetry/frsky.h"
 
-static serialPort_t *frskyPort;
+static serialPort_t *frskyPort = NULL;
+static serialPortConfig_t *portConfig;
+
 #define FRSKY_BAUDRATE 9600
 #define FRSKY_INITIAL_PORT_MODE MODE_TX
 
 static telemetryConfig_t *telemetryConfig;
+static bool frskyTelemetryEnabled =  false;
+static portSharing_e frskyPortSharing;
+
+
+extern batteryConfig_t *batteryConfig;
 
 extern int16_t telemTemperature1; // FIXME dependency on mw.c
 
@@ -93,6 +107,7 @@ extern int16_t telemTemperature1; // FIXME dependency on mw.c
 #define ID_ACC_X              0x24
 #define ID_ACC_Y              0x25
 #define ID_ACC_Z              0x26
+#define ID_VOLTAGE_AMP        0x39
 #define ID_VOLTAGE_AMP_BP     0x3A
 #define ID_VOLTAGE_AMP_AP     0x3B
 #define ID_CURRENT            0x28
@@ -158,9 +173,10 @@ static void sendBaro(void)
     sendDataHead(ID_ALTITUDE_BP);
     serialize16(BaroAlt / 100);
     sendDataHead(ID_ALTITUDE_AP);
-    serialize16(abs(BaroAlt % 100));
+    serialize16(ABS(BaroAlt % 100));
 }
 
+#ifdef GPS
 static void sendGpsAltitude(void)
 {
     uint16_t altitude = GPS_altitude;
@@ -173,15 +189,19 @@ static void sendGpsAltitude(void)
     sendDataHead(ID_GPS_ALTIDUTE_AP);
     serialize16(0);
 }
+#endif
 
-
-static void sendThrottleOrBatterySizeAsRpm(void)
+static void sendThrottleOrBatterySizeAsRpm(rxConfig_t *rxConfig, uint16_t deadband3d_throttle)
 {
+    uint16_t throttleForRPM = rcCommand[THROTTLE] / BLADE_NUMBER_DIVIDER;
     sendDataHead(ID_RPM);
     if (ARMING_FLAG(ARMED)) {
-        serialize16(rcCommand[THROTTLE] / BLADE_NUMBER_DIVIDER);
+        throttleStatus_e throttleStatus = calculateThrottleStatus(rxConfig, deadband3d_throttle);
+        if (throttleStatus == THROTTLE_LOW && feature(FEATURE_MOTOR_STOP))
+                    throttleForRPM = 0;
+        serialize16(throttleForRPM);
     } else {
-        serialize16((telemetryConfig->batterySize / BLADE_NUMBER_DIVIDER));  
+        serialize16((batteryConfig->batteryCapacity / BLADE_NUMBER_DIVIDER));
     }
 
 }
@@ -196,6 +216,7 @@ static void sendTemperature1(void)
 #endif
 }
 
+#ifdef GPS
 static void sendSatalliteSignalQualityAsTemperature2(void)
 {
     uint16_t satellite = GPS_numSat;
@@ -207,9 +228,9 @@ static void sendSatalliteSignalQualityAsTemperature2(void)
     if (telemetryConfig->frsky_unit == FRSKY_UNIT_METRICS) {
         serialize16(satellite);
     } else {
-        float tmp = (satellite - 32) / 1.8;
+        float tmp = (satellite - 32) / 1.8f;
         //Round the value
-        tmp += (tmp < 0) ? -0.5 : 0.5;
+        tmp += (tmp < 0) ? -0.5f : 0.5f;
         serialize16(tmp);
     }
 }
@@ -219,12 +240,14 @@ static void sendSpeed(void)
     if (!STATE(GPS_FIX)) {
         return;
     }
-    //Speed should be sent in m/s (GPS speed is in cm/s)
+    //Speed should be sent in knots (GPS speed is in cm/s)
     sendDataHead(ID_GPS_SPEED_BP);
-    serialize16((GPS_speed * 0.01 + 0.5));
+    //convert to knots: 1cm/s = 0.0194384449 knots
+    serialize16(GPS_speed * 1944 / 100000);
     sendDataHead(ID_GPS_SPEED_AP);
-    serialize16(0); //Not dipslayed
+    serialize16((GPS_speed * 1944 / 100) % 100);
 }
+#endif
 
 static void sendTime(void)
 {
@@ -238,13 +261,12 @@ static void sendTime(void)
     serialize16(seconds % 60);
 }
 
-#ifdef GPS
 // Frsky pdf: dddmm.mmmm
 // .mmmm is returned in decimal fraction of minutes.
 static void GPStoDDDMM_MMMM(int32_t mwiigps, gpsCoordinateDDDMMmmmm_t *result)
 {
     int32_t absgps, deg, min;
-    absgps = abs(mwiigps);
+    absgps = ABS(mwiigps);
     deg    = absgps / GPS_DEGREES_DIVIDER;
     absgps = (absgps - deg * GPS_DEGREES_DIVIDER) * 60;        // absgps = Minutes left * 10^7
     min    = absgps / GPS_DEGREES_DIVIDER;                     // minutes left
@@ -252,49 +274,71 @@ static void GPStoDDDMM_MMMM(int32_t mwiigps, gpsCoordinateDDDMMmmmm_t *result)
     if (telemetryConfig->frsky_coordinate_format == FRSKY_FORMAT_DMS) {
         result->dddmm = deg * 100 + min;
     } else {
-        result->dddmm = deg * 60 + min;    
+        result->dddmm = deg * 60 + min;
     }
 
     result->mmmm  = (absgps - min * GPS_DEGREES_DIVIDER) / 1000;
 }
 
-static void sendGPS(void)
+static void sendLatLong(int32_t coord[2])
 {
-    int32_t localGPS_coord[2] = {0,0};
-    // Don't set dummy GPS data, if we already had a GPS fix
-    // it can be usefull to keep last valid coordinates
-    static uint8_t gpsFixOccured = 0;
-
-    //Dummy data if no 3D fix, this way we can display heading in Taranis
-    if (STATE(GPS_FIX) || gpsFixOccured == 1) {
-        localGPS_coord[LAT] = GPS_coord[LAT];
-        localGPS_coord[LON] = GPS_coord[LON];
-        gpsFixOccured = 1;
-    } else {
-        // Send dummy GPS Data in order to display compass value
-        localGPS_coord[LAT] = (telemetryConfig->gpsNoFixLatitude * GPS_DEGREES_DIVIDER);
-        localGPS_coord[LON] = (telemetryConfig->gpsNoFixLongitude * GPS_DEGREES_DIVIDER);
-    }  
-
     gpsCoordinateDDDMMmmmm_t coordinate;
-    GPStoDDDMM_MMMM(localGPS_coord[LAT], &coordinate);
+    GPStoDDDMM_MMMM(coord[LAT], &coordinate);
     sendDataHead(ID_LATITUDE_BP);
     serialize16(coordinate.dddmm);
     sendDataHead(ID_LATITUDE_AP);
     serialize16(coordinate.mmmm);
     sendDataHead(ID_N_S);
-    serialize16(localGPS_coord[LAT] < 0 ? 'S' : 'N');
+    serialize16(coord[LAT] < 0 ? 'S' : 'N');
 
-    GPStoDDDMM_MMMM(localGPS_coord[LON], &coordinate);
+    GPStoDDDMM_MMMM(coord[LON], &coordinate);
     sendDataHead(ID_LONGITUDE_BP);
     serialize16(coordinate.dddmm);
     sendDataHead(ID_LONGITUDE_AP);
     serialize16(coordinate.mmmm);
     sendDataHead(ID_E_W);
-    serialize16(localGPS_coord[LON] < 0 ? 'W' : 'E');
+    serialize16(coord[LON] < 0 ? 'W' : 'E');
+}
+
+#ifdef GPS
+static void sendFakeLatLong(void)
+{
+    // Heading is only displayed on OpenTX if non-zero lat/long is also sent
+    int32_t coord[2] = {0,0};
+
+    coord[LAT] = (telemetryConfig->gpsNoFixLatitude * GPS_DEGREES_DIVIDER);
+    coord[LON] = (telemetryConfig->gpsNoFixLongitude * GPS_DEGREES_DIVIDER);
+
+    sendLatLong(coord);
 }
 #endif
 
+static void sendFakeLatLongThatAllowsHeadingDisplay(void)
+{
+    // Heading is only displayed on OpenTX if non-zero lat/long is also sent
+    int32_t coord[2] = {
+        1 * GPS_DEGREES_DIVIDER,
+        1 * GPS_DEGREES_DIVIDER
+    };
+
+    sendLatLong(coord);
+}
+
+#ifdef GPS
+static void sendGPSLatLong(void)
+{
+    static uint8_t gpsFixOccured = 0;
+
+    if (STATE(GPS_FIX) || gpsFixOccured == 1) {
+        // If we have ever had a fix, send the last known lat/long
+        gpsFixOccured = 1;
+        sendLatLong(GPS_coord);
+    } else {
+        // otherwise send fake lat/long in order to display compass value
+        sendFakeLatLong();
+    }
+}
+#endif
 
 /*
  * Send vertical speed for opentx. ID_VERT_SPEED
@@ -315,27 +359,24 @@ static void sendVario(void)
 static void sendVoltage(void)
 {
     static uint16_t currentCell = 0;
-    uint16_t cellNumber;
     uint32_t cellVoltage;
     uint16_t payload;
 
     /*
-     * Note: Fuck the pdf. Format for Voltage Data for single cells is like this:
+     * Format for Voltage Data for single cells is like this:
      *
      *  llll llll cccc hhhh
      *  l: Low voltage bits
      *  h: High voltage bits
      *  c: Cell number (starting at 0)
+     *
+     * The actual value sent for cell voltage has resolution of 0.002 volts
+     * Since vbat has resolution of 0.1 volts it has to be multiplied by 50
      */
-    cellVoltage = vbat / batteryCellCount;
-
-    // Map to 12 bit range
-    cellVoltage = (cellVoltage * 2100) / 42;
-
-    cellNumber = currentCell % batteryCellCount;
+    cellVoltage = ((uint32_t)vbat * 100 + batteryCellCount) / (batteryCellCount * 2);
 
     // Cell number is at bit 9-12
-    payload = (cellNumber << 4);
+    payload = (currentCell << 4);
 
     // Lower voltage bits are at bit 0-8
     payload |= ((cellVoltage & 0x0ff) << 8);
@@ -355,12 +396,20 @@ static void sendVoltage(void)
  */
 static void sendVoltageAmp(void)
 {
-    uint16_t voltage = (vbat * 110) / 21;
+    if (telemetryConfig->frsky_vfas_precision == FRSKY_VFAS_PRECISION_HIGH) {
+        /*
+         * Use new ID 0x39 to send voltage directly in 0.1 volts resolution
+         */
+        sendDataHead(ID_VOLTAGE_AMP);
+        serialize16(vbat);
+    } else {
+        uint16_t voltage = (vbat * 110) / 21;
 
-    sendDataHead(ID_VOLTAGE_AMP_BP);
-    serialize16(voltage / 100);
-    sendDataHead(ID_VOLTAGE_AMP_AP);
-    serialize16(((voltage % 100) + 5) / 10);
+        sendDataHead(ID_VOLTAGE_AMP_BP);
+        serialize16(voltage / 100);
+        sendDataHead(ID_VOLTAGE_AMP_AP);
+        serialize16(((voltage % 100) + 5) / 10);
+    }
 }
 
 static void sendAmperage(void)
@@ -371,12 +420,10 @@ static void sendAmperage(void)
 
 static void sendFuelLevel(void)
 {
-    uint16_t batterySize = telemetryConfig->batterySize;
-
     sendDataHead(ID_FUEL_LEVEL);
 
-    if (batterySize > 0) {
-        serialize16((uint16_t)constrain((batterySize - constrain(mAhDrawn, 0, 0xFFFF)) * 100.0 / batterySize , 0, 100));
+    if (batteryConfig->batteryCapacity > 0) {
+        serialize16((uint16_t)calculateBatteryCapacityRemainingPercentage());
     } else {
         serialize16((uint16_t)constrain(mAhDrawn, 0, 0xFFFF));
     }
@@ -385,7 +432,7 @@ static void sendFuelLevel(void)
 static void sendHeading(void)
 {
     sendDataHead(ID_COURSE_BP);
-    serialize16(heading);
+    serialize16(DECIDEGREES_TO_DEGREES(attitude.values.yaw));
     sendDataHead(ID_COURSE_AP);
     serialize16(0);
 }
@@ -393,45 +440,29 @@ static void sendHeading(void)
 void initFrSkyTelemetry(telemetryConfig_t *initialTelemetryConfig)
 {
     telemetryConfig = initialTelemetryConfig;
+    portConfig = findSerialPortConfig(FUNCTION_TELEMETRY_FRSKY);
+    frskyPortSharing = determinePortSharing(portConfig, FUNCTION_TELEMETRY_FRSKY);
 }
-
-static portMode_t previousPortMode;
-static uint32_t previousBaudRate;
 
 void freeFrSkyTelemetryPort(void)
 {
-    // FIXME only need to reset the port if the port is shared
-    serialSetMode(frskyPort, previousPortMode);
-    serialSetBaudRate(frskyPort, previousBaudRate);
-
-    endSerialPortFunction(frskyPort, FUNCTION_TELEMETRY);
+    closeSerialPort(frskyPort);
+    frskyPort = NULL;
+    frskyTelemetryEnabled = false;
 }
 
 void configureFrSkyTelemetryPort(void)
 {
-    frskyPort = findOpenSerialPort(FUNCTION_TELEMETRY);
-    if (frskyPort) {
-        previousPortMode = frskyPort->mode;
-        previousBaudRate = frskyPort->baudRate;
-
-        //waitForSerialPortToFinishTransmitting(frskyPort); // FIXME locks up the system
-
-        serialSetBaudRate(frskyPort, FRSKY_BAUDRATE);
-        serialSetMode(frskyPort, FRSKY_INITIAL_PORT_MODE);
-        beginSerialPortFunction(frskyPort, FUNCTION_TELEMETRY);
-    } else {
-        frskyPort = openSerialPort(FUNCTION_TELEMETRY, NULL, FRSKY_BAUDRATE, FRSKY_INITIAL_PORT_MODE, telemetryConfig->frsky_inversion);
-
-        // FIXME only need these values to reset the port if the port is shared
-        previousPortMode = frskyPort->mode;
-        previousBaudRate = frskyPort->baudRate;
+    if (!portConfig) {
+        return;
     }
-}
 
+    frskyPort = openSerialPort(portConfig->identifier, FUNCTION_TELEMETRY_FRSKY, NULL, FRSKY_BAUDRATE, FRSKY_INITIAL_PORT_MODE, telemetryConfig->telemetry_inversion ? SERIAL_INVERTED : SERIAL_NOT_INVERTED);
+    if (!frskyPort) {
+        return;
+    }
 
-bool canSendFrSkyTelemetry(void)
-{
-    return serialTotalBytesWaiting(frskyPort) == 0;
+    frskyTelemetryEnabled = true;
 }
 
 bool hasEnoughTimeLapsedSinceLastTelemetryTransmission(uint32_t currentMillis)
@@ -439,9 +470,23 @@ bool hasEnoughTimeLapsedSinceLastTelemetryTransmission(uint32_t currentMillis)
     return currentMillis - lastCycleTime >= CYCLETIME;
 }
 
-void handleFrSkyTelemetry(void)
+void checkFrSkyTelemetryState(void)
 {
-    if (!canSendFrSkyTelemetry()) {
+    bool newTelemetryEnabledValue = telemetryDetermineEnabledState(frskyPortSharing);
+
+    if (newTelemetryEnabledValue == frskyTelemetryEnabled) {
+        return;
+    }
+
+    if (newTelemetryEnabledValue)
+        configureFrSkyTelemetryPort();
+    else
+        freeFrSkyTelemetryPort();
+}
+
+void handleFrSkyTelemetry(rxConfig_t *rxConfig, uint16_t deadband3d_throttle)
+{
+    if (!frskyTelemetryEnabled) {
         return;
     }
 
@@ -470,7 +515,7 @@ void handleFrSkyTelemetry(void)
 
     if ((cycleNum % 8) == 0) {      // Sent every 1s
         sendTemperature1();
-        sendThrottleOrBatterySizeAsRpm();
+        sendThrottleOrBatterySizeAsRpm(rxConfig, deadband3d_throttle);
 
         if (feature(FEATURE_VBAT)) {
             sendVoltage();
@@ -484,13 +529,15 @@ void handleFrSkyTelemetry(void)
             sendSpeed();
             sendGpsAltitude();
             sendSatalliteSignalQualityAsTemperature2();
+            sendGPSLatLong();
         }
+        else {
+            sendFakeLatLongThatAllowsHeadingDisplay();
+        }
+#else
+        sendFakeLatLongThatAllowsHeadingDisplay();
 #endif
 
-        //  Send GPS information to display compass information
-        if (sensors(SENSOR_GPS) || (telemetryConfig->gpsNoFixLatitude != 0 && telemetryConfig->gpsNoFixLongitude != 0)) {
-            sendGPS();
-        }
         sendTelemetryTail();
     }
 
@@ -501,7 +548,4 @@ void handleFrSkyTelemetry(void)
     }
 }
 
-uint32_t getFrSkyTelemetryProviderBaudRate(void) {
-    return FRSKY_BAUDRATE;
-}
 #endif

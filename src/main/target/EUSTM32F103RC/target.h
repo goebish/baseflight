@@ -19,23 +19,26 @@
 
 #define TARGET_BOARD_IDENTIFIER "EUF1"
 
+#define LED0_GPIO   GPIOB
+#define LED0_PIN    Pin_3 // PB3 (LED)
+#define LED0_PERIPHERAL RCC_APB2Periph_GPIOB
+#define LED1_GPIO   GPIOB
+#define LED1_PIN    Pin_4 // PB4 (LED)
+#define LED1_PERIPHERAL RCC_APB2Periph_GPIOB
+
+#define INVERTER_PIN Pin_2 // PB2 (BOOT1) abused as inverter select GPIO
+#define INVERTER_GPIO GPIOB
+#define INVERTER_PERIPHERAL RCC_APB2Periph_GPIOB
+#define INVERTER_USART USART2
+
 #define MPU6000_CS_GPIO       GPIOB
 #define MPU6000_CS_PIN        GPIO_Pin_12
 #define MPU6000_SPI_INSTANCE  SPI2
 
+#define MPU6500_CS_GPIO_CLK_PERIPHERAL   RCC_APB2Periph_GPIOB
 #define MPU6500_CS_GPIO       GPIOB
 #define MPU6500_CS_PIN        GPIO_Pin_12
 #define MPU6500_SPI_INSTANCE  SPI2
-
-#define ACC
-#define USE_FAKE_ACC
-#define USE_ACC_ADXL345
-#define USE_ACC_BMA280
-#define USE_ACC_MMA8452
-#define USE_ACC_MPU3050
-#define USE_ACC_MPU6050
-//#define USE_ACC_SPI_MPU6000
-#define USE_ACC_SPI_MPU6500
 
 #define GYRO
 #define USE_FAKE_GYRO
@@ -46,13 +49,35 @@
 #define USE_GYRO_SPI_MPU6000
 #define USE_GYRO_SPI_MPU6500
 
+#define GYRO_MPU6050_ALIGN CW0_DEG
+
+#define ACC
+#define USE_FAKE_ACC
+#define USE_ACC_ADXL345
+#define USE_ACC_BMA280
+#define USE_ACC_MMA8452
+#define USE_ACC_MPU6050
+//#define USE_ACC_SPI_MPU6000
+#define USE_ACC_SPI_MPU6500
+
+#define ACC_MPU6050_ALIGN CW0_DEG
+
 #define BARO
 #define USE_BARO_MS5611
 #define USE_BARO_BMP085
 
 #define MAG
+#define USE_MAG_HMC5883
+#define USE_MAG_AK8975
+
+#define MAG_AK8975_ALIGN CW180_DEG_FLIP
+
+
 #define SONAR
+#define LED0
+#define LED1
 #define DISPLAY
+#define INVERTER
 
 #define USE_USART1
 #define USE_USART2
@@ -74,13 +99,39 @@
 // #define SOFT_I2C_PB1011 // If SOFT_I2C is enabled above, need to define pinout as well (I2C1 = PB67, I2C2 = PB1011)
 // #define SOFT_I2C_PB67
 
-#define SENSORS_SET (SENSOR_ACC | SENSOR_BARO | SENSOR_MAG)
+#define USE_ADC
 
-#define GPS
+#define CURRENT_METER_ADC_GPIO      GPIOB
+#define CURRENT_METER_ADC_GPIO_PIN  GPIO_Pin_1
+#define CURRENT_METER_ADC_CHANNEL   ADC_Channel_9
+
+#define VBAT_ADC_GPIO               GPIOA
+#define VBAT_ADC_GPIO_PIN           GPIO_Pin_4
+#define VBAT_ADC_CHANNEL            ADC_Channel_4
+
+#define RSSI_ADC_GPIO               GPIOA
+#define RSSI_ADC_GPIO_PIN           GPIO_Pin_1
+#define RSSI_ADC_CHANNEL            ADC_Channel_1
+
+#define EXTERNAL1_ADC_GPIO          GPIOA
+#define EXTERNAL1_ADC_GPIO_PIN      GPIO_Pin_5
+#define EXTERNAL1_ADC_CHANNEL       ADC_Channel_5
+
+
 #define LED_STRIP
 #define LED_STRIP_TIMER TIM3
+#define WS2811_DMA_TC_FLAG           DMA1_FLAG_TC6
+#define WS2811_DMA_HANDLER_IDENTIFER DMA1_CH6_HANDLER
 
+#define BLACKBOX
+#define GPS
+#define GTUNE
 #define TELEMETRY
 #define SERIAL_RX
-#define AUTOTUNE
+#define USE_SERVOS
+#define USE_CLI
 
+#define SPEKTRUM_BIND
+// USART2, PA3
+#define BIND_PORT  GPIOA
+#define BIND_PIN   Pin_3

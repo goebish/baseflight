@@ -2,7 +2,7 @@
 
 Telemetry allows you to know what is happening on your aircraft while you are flying it.  Among other things you can receive battery voltages and GPS positions on your transmitter.
 
-Telemetry can be either always on, or enabled when armed.  If no serial port is set to be telemetry-only then telemetry will only be enabled when armed.
+Telemetry can be either always on, or enabled when armed.  If a serial port for telemetry is shared with other functionality then then telemetry will only be enabled when armed on that port.
 
 Telemetry is enabled using the 'TELEMETRY` feature.
 
@@ -10,23 +10,10 @@ Telemetry is enabled using the 'TELEMETRY` feature.
 feature TELEMETRY
 ```
 
-Three telemetry providers are currently supported, FrSky (the default), Graupner HoTT V4 and MultiWii Serial Protocol (MSP)
+Multiple telemetry providers are currently supported, FrSky, Graupner
+HoTT V4, SmartPort (S.Port) and LightTelemetry (LTM)
 
-Use the `telemetry_provider` cli command to select one.
-
-| Value | Meaning         |
-| ----- | --------------- |
-| 0     | FrSky (Default) |
-| 1     | HoTT            |
-| 2     | MSP             |
-
-Example:
-
-```
-set telemetry_provider = 1
-```
-
-There are further examples in the Configuration section of the documentation.
+All telemetry systems use serial ports, configure serial ports to use the telemetry system required.
 
 ## FrSky telemetry
 
@@ -40,46 +27,118 @@ FrSky telemetry signals are inverted.  To connect a cleanflight capable board to
 
 For 1, just connect your inverter to a usart or software serial port.
 
-For 2 and 3 use the cli command as follows:
+For 2 and 3 use the CLI command as follows:
 
 ```
-set frsky_inversion = 1
+set telemetry_inversion = ON
 ```
+
+### Precision setting for VFAS
+
+Cleanflight can send VFAS (FrSky Ampere Sensor Voltage) in two ways:
+
+```
+set frsky_vfas_precision  = 0
+```
+This is default setting which supports VFAS resolution of 0.2 volts and is supported on all FrSky hardware.
+
+```
+set frsky_vfas_precision  = 1
+```
+This is new setting which supports VFAS resolution of 0.1 volts and is only supported by OpenTX radios (this method uses custom ID 0x39).
+
 
 ### Notes
 
 RPM shows throttle output when armed.
-RPM shows when diarmed.
-TEMP2 shows Satallite Signal Quality when GPS is enabled.
+RPM shows when disarmed.
+TEMP2 shows Satellite Signal Quality when GPS is enabled.
 
 RPM requires that the 'blades' setting is set to 12 on your receiver/display - tested with Taranis/OpenTX.
 
 ## HoTT telemetry
 
-HoTT telemetry can be used when the TX and RX pins of a serial port are connected using a diode and a single wire to the T port on a HoTT receiver.
+Only Electric Air Modules and GPS Modules are emulated.
 
-Only Electric Air Modules and GPS Modules are emulated, remember to enable them on your transmitter - in the Telemetry Menu on the MX-20.
- 
-Serial ports use two wires but HoTT uses a single wire so some electronics are required so that the signals don't get mixed up.
+Use the latest Graupner firmware for your transmitter and receiver.
+
+Older HoTT transmitters required the EAM and GPS modules to be enabled in the telemetry menu of the transmitter. (e.g. on MX-20)
+
+Serial ports use two wires but HoTT uses a single wire so some electronics are required so that the signals don't get mixed up.  The TX and RX pins of
+a serial port should be connected using a diode and a single wire to the `T` port on a HoTT receiver.
 
 Connect as follows:
-```
-HoTT TX/RX -> Serial RX (connect directly)
-Serial TX -> 1N4148 Diode -(|  )-> HoTT TX/RX (connect via diode)
-```
+
+* HoTT TX/RX `T` -> Serial RX (connect directly)
+* HoTT TX/RX `T` -> Diode `-(  |)-` > Serial TX (connect via diode)
 
 The diode should be arranged to allow the data signals to flow the right way
 
 ```
--(|  )- == Diode, | indicates cathode marker.
+-(  |)- == Diode, | indicates cathode marker.
 ```
+
+1N4148 diodes have been tested and work with the GR-24.
 
 As noticed by Skrebber the GR-12 (and probably GR-16/24, too) are based on a PIC 24FJ64GA-002, which has 5V tolerant digital pins.
 
-Note: The softserial ports are not listed as 5V tolerant in the STM32F103xx data sheet pinouts and pin description section.  Verify if you require a 5v/3.3v level shifters.
+Note: The SoftSerial ports may not be 5V tolerant on your board.  Verify if you require a 5v/3.3v level shifters.
 
-## MultiWii Serial Protocol (MSP)
+## LightTelemetry (LTM)
 
-MSP Telemetry simply transmitts MSP packets in sequence to any MSP device attached to the telemetry port.  It rotates though a fixes sequence of command responses.
+LTM is a lightweight streaming telemetry protocol supported by a
+number of OSDs, ground stations and antenna trackers.
 
-It is transmit only, it can work at any supported baud rate.
+The Cleanflight implementation of LTM implements the following frames:
+
+* G-FRAME: GPS information (lat, long, ground speed, altitude, sat
+  info)
+* A-FRAME: Attitude (pitch, roll, heading)
+* S-FRAME: Status (voltage, current+, RSSI, airspeed+, status). Item
+  suffixed '+' not implemented in Cleanflight.
+* O-FRAME: Origin (home position, lat, long, altitude, fix)
+
+In addition, in the inav (navigation-rewrite) fork:
+* N-FRAME: Navigation information (GPS mode, Nav mode, Nav action,
+  Waypoint number, Nav Error, Nav Flags).
+
+LTM is transmit only, and can work at any supported baud rate. It is
+designed to operate over 2400 baud (9600 in Cleanflight) and does not
+benefit from higher rates. It is thus usable on soft serial.
+
+More information about the fields, encoding and enumerations may be
+found at
+https://github.com/stronnag/mwptools/blob/master/docs/ltm-definition.txt
+
+## SmartPort (S.Port)
+
+Smartport is a telemetry system used by newer FrSky transmitters and receivers such as the Taranis/XJR and X8R, X6R and X4R(SB).
+
+More information about the implementation can be found here: https://github.com/frank26080115/cleanflight/wiki/Using-Smart-Port
+
+In time this documentation will be updated with further details.
+
+### SmartPort on F3 targets with hardware UART
+
+Smartport devices can be connected directly to STM32F3 boards such as the SPRacingF3 and Sparky, with a single straight through cable without the need for any hardware modifications on the FC or the receiver. Connect the TX PIN of the UART to the Smartport signal pin.
+
+For Smartport on F3 based boards, enable the telemetry inversion setting.
+
+```
+set telemetry_inversion = ON
+```
+
+### SmartPort on F1 and F3 targets with SoftSerial
+
+Since F1 targets like Naze32 or Flip32 are not equipped with hardware inverters, SoftSerial might be simpler to use. 
+
+1. Enable SoftSerial ```feature SOFTSERIAL```
+2. In Configurator assign _Telemetry_ > _Smartport_ > _Auto_ to SoftSerial port of your choice
+3. Enable Telemetry ```feature TELEMETRY```
+4. Confirm telemetry invesion ```set telemetry_inversion = ON```
+5. You have to bridge TX and RX lines of SoftSerial and connect them together to S.Port signal line in receiver
+
+Notes:
+
+* This has been tested with Flip32 and SPracingF3 boards and FrSky X8R and X4R receivers
+* To discover all sensors board has to be armed. When not armed, values like ***Vfas*** or GPS coordinates are not sent

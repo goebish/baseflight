@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "rx/rx.h"
+
 typedef enum {
     BOXARM = 0,
     BOXANGLE,
@@ -39,14 +41,19 @@ typedef enum {
     BOXGOV,
     BOXOSD,
     BOXTELEMETRY,
-    BOXAUTOTUNE,
+    BOXGTUNE,
     BOXSONAR,
+    BOXSERVO1,
+    BOXSERVO2,
+    BOXSERVO3,
+    BOXBLACKBOX,
+    BOXFAILSAFE,
     CHECKBOX_ITEM_COUNT
 } boxId_e;
 
 extern uint32_t rcModeActivationMask;
 
-#define IS_RC_MODE_ACTIVE(modeId) ((1 << modeId) & rcModeActivationMask)
+#define IS_RC_MODE_ACTIVE(modeId) ((1 << (modeId)) & rcModeActivationMask)
 #define ACTIVATE_RC_MODE(modeId) (rcModeActivationMask |= (1 << modeId))
 
 typedef enum rc_alias {
@@ -82,21 +89,24 @@ typedef enum {
 #define THR_CE (3 << (2 * THROTTLE))
 #define THR_HI (2 << (2 * THROTTLE))
 
-#define MAX_MODE_ACTIVATION_CONDITION_COUNT 40
-// 40 is enough for 1 mode for each position of 11 * 3 position switches and a 6 pos switch.
-// however, that is unlikely because you don't define the 'off' positions, so for a 3 position
-// switch it's normal that only 2 values would be configured.
-// this leaves plenty of 'slots' free for cases where you enable multiple modes for a switch
-// position (like gps rth + horizon + baro + beeper)
+#define MAX_MODE_ACTIVATION_CONDITION_COUNT 20
 
 #define CHANNEL_RANGE_MIN 900
 #define CHANNEL_RANGE_MAX 2100
 
-#define MODE_STEP_TO_CHANNEL_VALUE(step) (CHANNEL_RANGE_MIN + 25 * step)
-#define CHANNEL_VALUE_TO_STEP(channelValue) ((constrain(channelValue, CHANNEL_RANGE_MIN, CHANNEL_RANGE_MAX) - CHANNEL_RANGE_MIN) / 25)
+#define MODE_STEP_TO_CHANNEL_VALUE(step) (CHANNEL_RANGE_MIN + 25 * (step))
+#define CHANNEL_VALUE_TO_STEP(channelValue) ((constrain((channelValue), CHANNEL_RANGE_MIN, CHANNEL_RANGE_MAX) - CHANNEL_RANGE_MIN) / 25)
 
 #define MIN_MODE_RANGE_STEP 0
 #define MAX_MODE_RANGE_STEP ((CHANNEL_RANGE_MAX - CHANNEL_RANGE_MIN) / 25)
+
+// Roll/pitch rates are a proportion used for mixing, so it tops out at 1.0:
+#define CONTROL_RATE_CONFIG_ROLL_PITCH_RATE_MAX  100
+
+/* Meaningful yaw rates are effectively unbounded because they are treated as a rotation rate multiplier: */
+#define CONTROL_RATE_CONFIG_YAW_RATE_MAX         255
+
+#define CONTROL_RATE_CONFIG_TPA_MAX              100
 
 // steps are 25 apart
 // a value of 0 corresponds to a channel value of 900 or less
@@ -120,13 +130,22 @@ typedef struct controlRateConfig_s {
     uint8_t rcExpo8;
     uint8_t thrMid8;
     uint8_t thrExpo8;
-    uint8_t rollPitchRate;
-    uint8_t yawRate;
+    uint8_t rates[3];
     uint8_t dynThrPID;
+    uint8_t rcYawExpo8;
     uint16_t tpa_breakpoint;                // Breakpoint where TPA is activated
 } controlRateConfig_t;
 
 extern int16_t rcCommand[4];
+
+typedef struct rcControlsConfig_s {
+    uint8_t deadband;                       // introduce a deadband around the stick center for pitch and roll axis. Must be greater than zero.
+    uint8_t yaw_deadband;                   // introduce a deadband around the stick center for yaw axis. Must be greater than zero.
+    uint8_t alt_hold_deadband;              // defines the neutral zone of throttle stick during altitude hold, default setting is +/-40
+    uint8_t alt_hold_fast_change;           // when disabled, turn off the althold when throttle stick is out of deadband defined with alt_hold_deadband; when enabled, altitude changes slowly proportional to stick movement
+} rcControlsConfig_t;
+
+bool areUsingSticksToArm(void);
 
 bool areSticksInApModePosition(uint16_t ap_mode);
 throttleStatus_e calculateThrottleStatus(rxConfig_t *rxConfig, uint16_t deadband3d_throttle);
@@ -134,6 +153,14 @@ void processRcStickPositions(rxConfig_t *rxConfig, throttleStatus_e throttleStat
 
 void updateActivatedModes(modeActivationCondition_t *modeActivationConditions);
 
+#define PID_MIN      0
+#define PID_MAX      200
+#define PID_F_MIN    0
+#define PID_F_MAX    100
+#define RC_RATE_MIN  0
+#define RC_RATE_MAX  250
+#define EXPO_MIN     0
+#define EXPO_MAX     100
 
 typedef enum {
     ADJUSTMENT_NONE = 0,
@@ -148,10 +175,37 @@ typedef enum {
     ADJUSTMENT_YAW_P,
     ADJUSTMENT_YAW_I,
     ADJUSTMENT_YAW_D,
-    ADJUSTMENT_RATE_PROFILE
+    ADJUSTMENT_RATE_PROFILE,
+    ADJUSTMENT_PITCH_RATE,
+    ADJUSTMENT_ROLL_RATE,
+    ADJUSTMENT_PITCH_P,
+    ADJUSTMENT_PITCH_I,
+    ADJUSTMENT_PITCH_D,
+    ADJUSTMENT_ROLL_P,
+    ADJUSTMENT_ROLL_I,
+    ADJUSTMENT_ROLL_D,
+    ADJUSTMENT_ALT_P,
+    ADJUSTMENT_ALT_I,
+    ADJUSTMENT_ALT_D,
+    ADJUSTMENT_VEL_P,
+    ADJUSTMENT_VEL_I,
+    ADJUSTMENT_VEL_D,
+    ADJUSTMENT_MAG_P,
+    ADJUSTMENT_POS_P,
+    ADJUSTMENT_POS_I,
+    ADJUSTMENT_POSR_P,
+    ADJUSTMENT_POSR_I,
+    ADJUSTMENT_POSR_D,
+    ADJUSTMENT_NAVR_P,
+    ADJUSTMENT_NAVR_I,
+    ADJUSTMENT_NAVR_D,
+    ADJUSTMENT_LEVEL_P,
+    ADJUSTMENT_LEVEL_I,
+    ADJUSTMENT_LEVEL_D,
+
 } adjustmentFunction_e;
 
-#define ADJUSTMENT_FUNCTION_COUNT 13
+#define ADJUSTMENT_FUNCTION_COUNT 39
 
 typedef enum {
     ADJUSTMENT_MODE_STEP,
@@ -194,15 +248,24 @@ typedef struct adjustmentRange_s {
 
 typedef struct adjustmentState_s {
     uint8_t auxChannelIndex;
-    const adjustmentConfig_t *config;
+    adjustmentConfig_t config;
     uint32_t timeoutAt;
+    adjustmentRange_t *range;
 } adjustmentState_t;
 
+
+#ifndef MAX_SIMULTANEOUS_ADJUSTMENT_COUNT
 #define MAX_SIMULTANEOUS_ADJUSTMENT_COUNT 4 // enough for 4 x 3position switches / 4 aux channel
+#endif
 
 #define MAX_ADJUSTMENT_RANGE_COUNT 12 // enough for 2 * 6pos switches.
 
-void configureAdjustment(uint8_t index, uint8_t auxChannelIndex, const adjustmentConfig_t *adjustmentConfig);
+void resetAdjustmentStates(void);
+void configureAdjustmentState(adjustmentRange_t *adjustmentRange);
 void updateAdjustmentStates(adjustmentRange_t *adjustmentRanges);
 void processRcAdjustments(controlRateConfig_t *controlRateConfig, rxConfig_t *rxConfig);
 
+bool isUsingSticksForArming(void);
+
+int32_t getRcStickDeflection(int32_t axis, uint16_t midrc);
+bool isModeActivationConditionPresent(modeActivationCondition_t *modeActivationConditions, boxId_e modeId);

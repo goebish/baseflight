@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include <platform.h>
 
@@ -29,35 +30,47 @@
 
 #ifndef SOFT_I2C
 
-#define I2C_SHORT_TIMEOUT             ((uint32_t)0x1000)
-#define I2C_LONG_TIMEOUT             ((uint32_t)(10 * I2C_SHORT_TIMEOUT))
-
 #define I2C1_SCL_GPIO        GPIOB
+#define I2C1_SCL_GPIO_AF     GPIO_AF_4
 #define I2C1_SCL_PIN         GPIO_Pin_6
 #define I2C1_SCL_PIN_SOURCE  GPIO_PinSource6
 #define I2C1_SCL_CLK_SOURCE  RCC_AHBPeriph_GPIOB
 #define I2C1_SDA_GPIO        GPIOB
+#define I2C1_SDA_GPIO_AF     GPIO_AF_4
 #define I2C1_SDA_PIN         GPIO_Pin_7
 #define I2C1_SDA_PIN_SOURCE  GPIO_PinSource7
 #define I2C1_SDA_CLK_SOURCE  RCC_AHBPeriph_GPIOB
 
+#if !defined(I2C2_SCL_GPIO)
 #define I2C2_SCL_GPIO        GPIOF
+#define I2C2_SCL_GPIO_AF     GPIO_AF_4
 #define I2C2_SCL_PIN         GPIO_Pin_6
 #define I2C2_SCL_PIN_SOURCE  GPIO_PinSource6
 #define I2C2_SCL_CLK_SOURCE  RCC_AHBPeriph_GPIOF
 #define I2C2_SDA_GPIO        GPIOA
+#define I2C2_SDA_GPIO_AF     GPIO_AF_4
 #define I2C2_SDA_PIN         GPIO_Pin_10
 #define I2C2_SDA_PIN_SOURCE  GPIO_PinSource10
 #define I2C2_SDA_CLK_SOURCE  RCC_AHBPeriph_GPIOA
+
+#endif
 
 static uint32_t i2cTimeout;
 
 static volatile uint16_t i2c1ErrorCount = 0;
 static volatile uint16_t i2c2ErrorCount = 0;
 
+static I2C_TypeDef *I2Cx = NULL;
+
 ///////////////////////////////////////////////////////////////////////////////
 // I2C TimeoutUserCallback
 ///////////////////////////////////////////////////////////////////////////////
+
+static bool i2cOverClock;
+
+void i2cSetOverclock(uint8_t OverClock) {
+    i2cOverClock = (OverClock) ? true : false;
+}
 
 uint32_t i2cTimeoutUserCallback(I2C_TypeDef *I2Cx)
 {
@@ -75,15 +88,14 @@ void i2cInitPort(I2C_TypeDef *I2Cx)
     I2C_InitTypeDef I2C_InitStructure;
 
     if (I2Cx == I2C1) {
-        RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
-        RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
         RCC_AHBPeriphClockCmd(I2C1_SCL_CLK_SOURCE | I2C1_SDA_CLK_SOURCE, ENABLE);
+        RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
         RCC_I2CCLKConfig(RCC_I2C1CLK_SYSCLK);
 
         //i2cUnstick(I2Cx);                                         // Clock out stuff to make sure slaves arent stuck
 
-        GPIO_PinAFConfig(I2C1_SCL_GPIO, I2C1_SCL_PIN_SOURCE, GPIO_AF_4);
-        GPIO_PinAFConfig(I2C1_SDA_GPIO, I2C1_SDA_PIN_SOURCE, GPIO_AF_4);
+        GPIO_PinAFConfig(I2C1_SCL_GPIO, I2C1_SCL_PIN_SOURCE, I2C1_SCL_GPIO_AF);
+        GPIO_PinAFConfig(I2C1_SDA_GPIO, I2C1_SDA_PIN_SOURCE, I2C1_SDA_GPIO_AF);
 
         GPIO_StructInit(&GPIO_InitStructure);
         I2C_StructInit(&I2C_InitStructure);
@@ -109,8 +121,13 @@ void i2cInitPort(I2C_TypeDef *I2Cx)
         I2C_InitStructure.I2C_OwnAddress1 = 0x00;
         I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
         I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-        I2C_InitStructure.I2C_Timing = 0x00E0257A; // 400 Khz, 72Mhz Clock, Analog Filter Delay ON, Rise 100, Fall 10.
+        if (i2cOverClock) {
+            I2C_InitStructure.I2C_Timing = 0x00500E30; // 1000 Khz, 72Mhz Clock, Analog Filter Delay ON, Setup 40, Hold 4.
+        } else {
+            I2C_InitStructure.I2C_Timing = 0x00E0257A; // 400 Khz, 72Mhz Clock, Analog Filter Delay ON, Rise 100, Fall 10
+        }
         //I2C_InitStructure.I2C_Timing              = 0x8000050B;
+
 
         I2C_Init(I2C1, &I2C_InitStructure);
 
@@ -118,15 +135,14 @@ void i2cInitPort(I2C_TypeDef *I2Cx)
     }
 
     if (I2Cx == I2C2) {
-        RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
-        RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C2, ENABLE);
         RCC_AHBPeriphClockCmd(I2C2_SCL_CLK_SOURCE | I2C2_SDA_CLK_SOURCE, ENABLE);
+        RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C2, ENABLE);
         RCC_I2CCLKConfig(RCC_I2C2CLK_SYSCLK);
 
         //i2cUnstick(I2Cx);                                         // Clock out stuff to make sure slaves arent stuck
 
-        GPIO_PinAFConfig(I2C2_SCL_GPIO, I2C2_SCL_PIN_SOURCE, GPIO_AF_4);
-        GPIO_PinAFConfig(I2C2_SDA_GPIO, I2C2_SDA_PIN_SOURCE, GPIO_AF_4);
+        GPIO_PinAFConfig(I2C2_SCL_GPIO, I2C2_SCL_PIN_SOURCE, I2C2_SCL_GPIO_AF);
+        GPIO_PinAFConfig(I2C2_SDA_GPIO, I2C2_SDA_PIN_SOURCE, I2C2_SDA_GPIO_AF);
 
         GPIO_StructInit(&GPIO_InitStructure);
         I2C_StructInit(&I2C_InitStructure);
@@ -151,7 +167,18 @@ void i2cInitPort(I2C_TypeDef *I2Cx)
         I2C_InitStructure.I2C_OwnAddress1 = 0x00;
         I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
         I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-        I2C_InitStructure.I2C_Timing = 0x00E0257A; // 400 Khz, 72Mhz Clock, Analog Filter Delay ON, Rise 100, Fall 10.
+
+        // FIXME timing is board specific
+        //I2C_InitStructure.I2C_Timing = 0x00310309; // //400kHz I2C @ 8MHz input -> PRESC=0x0, SCLDEL=0x3, SDADEL=0x1, SCLH=0x03, SCLL=0x09 - value from TauLabs/Sparky
+        // ^ when using this setting and after a few seconds of a scope probe being attached to the I2C bus it was observed that the bus enters
+        // a busy state and does not recover.
+
+        if (i2cOverClock) {
+            I2C_InitStructure.I2C_Timing = 0x00500E30; // 1000 Khz, 72Mhz Clock, Analog Filter Delay ON, Setup 40, Hold 4.
+        } else {
+            I2C_InitStructure.I2C_Timing = 0x00E0257A; // 400 Khz, 72Mhz Clock, Analog Filter Delay ON, Rise 100, Fall 10
+        }
+
         //I2C_InitStructure.I2C_Timing              = 0x8000050B;
 
         I2C_Init(I2C2, &I2C_InitStructure);
@@ -162,21 +189,30 @@ void i2cInitPort(I2C_TypeDef *I2Cx)
 
 void i2cInit(I2CDevice index)
 {
-    UNUSED(index);
-    i2cInitPort(I2C1); // FIXME hard coded to use I2C1 for now
+    if (index == I2CDEV_1) {
+        I2Cx = I2C1;
+    } else {
+        I2Cx = I2C2;
+    }
+    i2cInitPort(I2Cx);
 }
 
 uint16_t i2cGetErrorCounter(void)
 {
-    return i2c1ErrorCount;
+    if (I2Cx == I2C1) {
+        return i2c1ErrorCount;
+    }
+
+    return i2c2ErrorCount;
+
 }
 
 bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
 {
-    I2C_TypeDef* I2Cx = I2C1;
+    addr_ <<= 1;
 
     /* Test on BUSY Flag */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_BUSY) != RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -187,7 +223,7 @@ bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
     I2C_TransferHandling(I2Cx, addr_, 1, I2C_Reload_Mode, I2C_Generate_Start_Write);
 
     /* Wait until TXIS flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_TXIS) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -198,7 +234,7 @@ bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
     I2C_SendData(I2Cx, (uint8_t) reg);
 
     /* Wait until TCR flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_TCR) == RESET)
     {
         if ((i2cTimeout--) == 0) {
@@ -210,7 +246,7 @@ bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
     I2C_TransferHandling(I2Cx, addr_, 1, I2C_AutoEnd_Mode, I2C_No_StartStop);
 
     /* Wait until TXIS flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_TXIS) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -221,7 +257,7 @@ bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
     I2C_SendData(I2Cx, data);
 
     /* Wait until STOPF flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_STOPF) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -236,9 +272,10 @@ bool i2cWrite(uint8_t addr_, uint8_t reg, uint8_t data)
 
 bool i2cRead(uint8_t addr_, uint8_t reg, uint8_t len, uint8_t* buf)
 {
-    I2C_TypeDef* I2Cx = I2C1;
+    addr_ <<= 1;
+
     /* Test on BUSY Flag */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_BUSY) != RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -249,22 +286,18 @@ bool i2cRead(uint8_t addr_, uint8_t reg, uint8_t len, uint8_t* buf)
     I2C_TransferHandling(I2Cx, addr_, 1, I2C_SoftEnd_Mode, I2C_Generate_Start_Write);
 
     /* Wait until TXIS flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_TXIS) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
         }
     }
 
-    if (len > 1) {
-        reg |= 0x80;
-    }
-
     /* Send Register address */
     I2C_SendData(I2Cx, (uint8_t) reg);
 
     /* Wait until TC flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_TC) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);
@@ -277,7 +310,7 @@ bool i2cRead(uint8_t addr_, uint8_t reg, uint8_t len, uint8_t* buf)
     /* Wait until all data are received */
     while (len) {
         /* Wait until RXNE flag is set */
-        i2cTimeout = I2C_LONG_TIMEOUT;
+        i2cTimeout = I2C_DEFAULT_TIMEOUT;
         while (I2C_GetFlagStatus(I2Cx, I2C_ISR_RXNE) == RESET) {
             if ((i2cTimeout--) == 0) {
                 return i2cTimeoutUserCallback(I2Cx);
@@ -294,7 +327,7 @@ bool i2cRead(uint8_t addr_, uint8_t reg, uint8_t len, uint8_t* buf)
     }
 
     /* Wait until STOPF flag is set */
-    i2cTimeout = I2C_LONG_TIMEOUT;
+    i2cTimeout = I2C_DEFAULT_TIMEOUT;
     while (I2C_GetFlagStatus(I2Cx, I2C_ISR_STOPF) == RESET) {
         if ((i2cTimeout--) == 0) {
             return i2cTimeoutUserCallback(I2Cx);

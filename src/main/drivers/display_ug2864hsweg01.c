@@ -19,7 +19,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "bus_i2c.h"
 #include "system.h"
@@ -31,7 +31,7 @@
 
 unsigned char CHAR_FORMAT = NORMAL_CHAR_FORMAT;
 
-static const uint8_t const multiWiiFont[][5] = { // Refer to "Times New Roman" Font Database... 5 x 7 font
+static const uint8_t multiWiiFont[][5] = { // Refer to "Times New Roman" Font Database... 5 x 7 font
         { 0x00, 0x00, 0x00, 0x00, 0x00 }, { 0x00, 0x00, 0x4F, 0x00, 0x00 }, //   (  1)  ! - 0x0021 Exclamation Mark
                 { 0x00, 0x07, 0x00, 0x07, 0x00 }, //   (  2)  " - 0x0022 Quotation Mark
                 { 0x14, 0x7F, 0x14, 0x7F, 0x14 }, //   (  3)  # - 0x0023 Number Sign
@@ -153,23 +153,31 @@ static const uint8_t const multiWiiFont[][5] = { // Refer to "Times New Roman" F
                 { 0x17, 0x08, 0x34, 0x2A, 0x7D }, //   (119) /4 - 0x00BC Vulgar Fraction One Quarter
                 { 0x17, 0x08, 0x04, 0x6A, 0x59 }, //   (120) /2 - 0x00BD Vulgar Fraction One Half
                 { 0x30, 0x48, 0x45, 0x40, 0x20 }, //   (121)  ? - 0x00BE Inverted Question Mark
-                { 0x42, 0x00, 0x42, 0x00, 0x42 }, //   (122)    - 0x00BF Bargraph - 0
-                { 0x7E, 0x42, 0x00, 0x42, 0x00 }, //   (123)    - 0x00BF Bargraph - 1
-                { 0x7E, 0x7E, 0x00, 0x42, 0x00 }, //   (124)    - 0x00BF Bargraph - 2
-                { 0x7E, 0x7E, 0x7E, 0x42, 0x00 }, //   (125)    - 0x00BF Bargraph - 3
-                { 0x7E, 0x7E, 0x7E, 0x7E, 0x00 }, //   (126)    - 0x00BF Bargraph - 4
-                { 0x7E, 0x7E, 0x7E, 0x7E, 0x7E }, //   (127)    - 0x00BF Bargraph - 5
+                { 0x42, 0x00, 0x42, 0x00, 0x42 }, //   (122)    - 0x00BF Horizontal Bargraph - 0 (empty)
+                { 0x7E, 0x42, 0x00, 0x42, 0x00 }, //   (123)    - 0x00C0 Horizontal Bargraph - 1
+                { 0x7E, 0x7E, 0x00, 0x42, 0x00 }, //   (124)    - 0x00C1 Horizontal Bargraph - 2
+                { 0x7E, 0x7E, 0x7E, 0x42, 0x00 }, //   (125)    - 0x00C2 Horizontal Bargraph - 3
+                { 0x7E, 0x7E, 0x7E, 0x7E, 0x00 }, //   (126)    - 0x00C3 Horizontal Bargraph - 4
+                { 0x7E, 0x7E, 0x7E, 0x7E, 0x7E }, //   (127)    - 0x00C4 Horizontal Bargraph - 5 (full)
+                { 0x5A, 0x00, 0x00, 0x00, 0x5A }, //   (128)    - 0x00C5 Vertical Bargraph - 0 (empty)
+                { 0x5A, 0x40, 0x40, 0x40, 0x5A }, //   (129)    - 0x00C6 Vertical Bargraph - 1
+                { 0x7A, 0x60, 0x60, 0x60, 0x7A }, //   (130)    - 0x00C7 Vertical Bargraph - 2
+                { 0x7A, 0x70, 0x70, 0x70, 0x7A }, //   (131)    - 0x00C8 Vertical Bargraph - 3
+                { 0x7A, 0x78, 0x78, 0x78, 0x7A }, //   (131)    - 0x00C8 Vertical Bargraph - 4
+                { 0x7A, 0x7C, 0x7C, 0x7C, 0x7A }, //   (131)    - 0x00C8 Vertical Bargraph - 5
+                { 0x7A, 0x7E, 0x7E, 0x7E, 0x7A }, //   (131)    - 0x00C8 Vertical Bargraph - 6 (full)
         };
 
 #define OLED_address   0x3C     // OLED at address 0x3C in 7bit
-void i2c_OLED_send_cmd(uint8_t command)
+
+static bool i2c_OLED_send_cmd(uint8_t command)
 {
-    i2cWrite(OLED_address, 0x80, command);
+    return i2cWrite(OLED_address, 0x80, command);
 }
 
-static void i2c_OLED_send_byte(uint8_t val)
+static bool i2c_OLED_send_byte(uint8_t val)
 {
-    i2cWrite(OLED_address, 0x40, val);
+    return i2cWrite(OLED_address, 0x40, val);
 }
 
 void i2c_OLED_clear_display(void)
@@ -182,7 +190,7 @@ void i2c_OLED_clear_display(void)
     i2c_OLED_send_cmd(0x40);              // Display start line register to 0
     i2c_OLED_send_cmd(0);                 // Set low col address to 0
     i2c_OLED_send_cmd(0x10);              // Set high col address to 0
-    for(uint16_t i=0; i<1024; i++) {      // fill the display's RAM with graphic... 128*64 pixel picture
+    for(uint16_t i = 0; i < 1024; i++) {  // fill the display's RAM with graphic... 128*64 pixel picture
         i2c_OLED_send_byte(0x00);  // clear
     }
     i2c_OLED_send_cmd(0x81);              // Setup CONTRAST CONTROL, following byte is the contrast Value... always a 2 byte instruction
@@ -196,7 +204,7 @@ void i2c_OLED_clear_display_quick(void)
     i2c_OLED_send_cmd(0x40);              // Display start line register to 0
     i2c_OLED_send_cmd(0);                 // Set low col address to 0
     i2c_OLED_send_cmd(0x10);              // Set high col address to 0
-    for(uint16_t i=0; i<1024; i++) {      // fill the display's RAM with graphic... 128*64 pixel picture
+    for(uint16_t i = 0; i < 1024; i++) {      // fill the display's RAM with graphic... 128*64 pixel picture
         i2c_OLED_send_byte(0x00);  // clear
     }
 }
@@ -236,6 +244,46 @@ void i2c_OLED_send_string(const char *string)
     }
 }
 
+/**
+* according to http://www.adafruit.com/datasheets/UG-2864HSWEG01.pdf Chapter 4.4 Page 15
+*/
+#if 1
+bool ug2864hsweg01InitI2C(void)
+{
+
+    // Set display OFF
+    if (!i2c_OLED_send_cmd(0xAE)) {
+        return false;
+    }
+
+    i2c_OLED_send_cmd(0xD4); // Set Display Clock Divide Ratio / OSC Frequency
+    i2c_OLED_send_cmd(0x80); // Display Clock Divide Ratio / OSC Frequency
+    i2c_OLED_send_cmd(0xA8); // Set Multiplex Ratio
+    i2c_OLED_send_cmd(0x3F); // Multiplex Ratio for 128x64 (64-1)
+    i2c_OLED_send_cmd(0xD3); // Set Display Offset
+    i2c_OLED_send_cmd(0x00); // Display Offset
+    i2c_OLED_send_cmd(0x40); // Set Display Start Line
+    i2c_OLED_send_cmd(0x8D); // Set Charge Pump
+    i2c_OLED_send_cmd(0x14); // Charge Pump (0x10 External, 0x14 Internal DC/DC)
+    i2c_OLED_send_cmd(0xA1); // Set Segment Re-Map
+    i2c_OLED_send_cmd(0xC8); // Set Com Output Scan Direction
+    i2c_OLED_send_cmd(0xDA); // Set COM Hardware Configuration
+    i2c_OLED_send_cmd(0x12); // COM Hardware Configuration
+    i2c_OLED_send_cmd(0x81); // Set Contrast
+    i2c_OLED_send_cmd(0xCF); // Contrast
+    i2c_OLED_send_cmd(0xD9); // Set Pre-Charge Period
+    i2c_OLED_send_cmd(0xF1); // Set Pre-Charge Period (0x22 External, 0xF1 Internal)
+    i2c_OLED_send_cmd(0xDB); // Set VCOMH Deselect Level
+    i2c_OLED_send_cmd(0x40); // VCOMH Deselect Level
+    i2c_OLED_send_cmd(0xA4); // Set all pixels OFF
+    i2c_OLED_send_cmd(0xA6); // Set display not inverted
+    i2c_OLED_send_cmd(0xAF); // Set display On
+
+    i2c_OLED_clear_display();
+
+    return true;
+}
+#else
 void ug2864hsweg01InitI2C(void)
 {
     i2c_OLED_send_cmd(0xae);    //display off
@@ -273,3 +321,4 @@ void ug2864hsweg01InitI2C(void)
     i2c_OLED_clear_display();
 }
 
+#endif

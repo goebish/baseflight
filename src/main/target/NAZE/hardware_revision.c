@@ -19,14 +19,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "build_config.h"
 
 #include "drivers/system.h"
 #include "drivers/bus_spi.h"
+#include "drivers/sensor.h"
+#include "drivers/exti.h"
 #include "drivers/accgyro.h"
-#include "drivers/accgyro_spi_mpu6500.h"
+#include "drivers/accgyro_mpu.h"
+#include "drivers/accgyro_mpu6500.h"
 
 #include "hardware_revision.h"
 
@@ -57,7 +60,7 @@ void detectHardwareRevision(void)
 #define SPI_DEVICE_MPU (2)
 
 #define M25P16_INSTRUCTION_RDID 0x9F
-#define FLASH_M25P16 (0x202015)
+#define FLASH_M25P16_ID (0x202015)
 
 uint8_t detectSpiDevice(void)
 {
@@ -65,20 +68,21 @@ uint8_t detectSpiDevice(void)
     uint8_t in[4];
     uint32_t flash_id;
 
-    delay(50); // short delay required after initialisation of SPI device instance.
-
     // try autodetect flash chip
+    delay(50); // short delay required after initialisation of SPI device instance.
     ENABLE_SPI_CS;
     spiTransfer(NAZE_SPI_INSTANCE, in, out, sizeof(out));
     DISABLE_SPI_CS;
 
     flash_id = in[1] << 16 | in[2] << 8 | in[3];
-    if (flash_id == FLASH_M25P16)
+    if (flash_id == FLASH_M25P16_ID)
         return SPI_DEVICE_FLASH;
 
+
     // try autodetect MPU
+    delay(50);
     ENABLE_SPI_CS;
-    spiTransferByte(NAZE_SPI_INSTANCE, MPU6500_RA_WHOAMI | MPU6500_BIT_RESET);
+    spiTransferByte(NAZE_SPI_INSTANCE, MPU_RA_WHO_AM_I | MPU6500_BIT_RESET);
     in[0] = spiTransferByte(NAZE_SPI_INSTANCE, 0xff);
     DISABLE_SPI_CS;
 

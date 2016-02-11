@@ -18,15 +18,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "common/axis.h"
 
+#include "drivers/sensor.h"
+#include "drivers/compass.h"
 #include "drivers/compass_hmc5883l.h"
 #include "drivers/gpio.h"
 #include "drivers/light_led.h"
 
-#include "flight/flight.h"
 #include "sensors/boardalignment.h"
 #include "config/runtime_config.h"
 #include "config/config.h"
@@ -37,6 +38,8 @@
 #ifdef NAZE
 #include "hardware_revision.h"
 #endif
+
+mag_t mag;                   // mag access functions
 
 extern uint32_t currentTime; // FIXME dependency on global variable, pass it in instead.
 
@@ -49,50 +52,23 @@ void compassInit(void)
 {
     // initialize and calibration. turn on led during mag calibration (calibration routine blinks it)
     LED1_ON;
-
-    hmc5883Config_t *hmc5883Config = 0;
-#ifdef NAZE
-    hmc5883Config_t nazeHmc5883Config;
-
-    if (hardwareRevision < NAZE32_REV5) {
-        nazeHmc5883Config.gpioAPB2Peripherals = RCC_APB2Periph_GPIOB;
-        nazeHmc5883Config.gpioPin = Pin_12;
-        nazeHmc5883Config.gpioPort = GPIOB;
-    } else {
-        nazeHmc5883Config.gpioAPB2Peripherals = RCC_APB2Periph_GPIOC;
-        nazeHmc5883Config.gpioPin = Pin_14;
-        nazeHmc5883Config.gpioPort = GPIOC;
-    }
-
-    hmc5883Config = &nazeHmc5883Config;
-#endif
-
-    hmc5883lInit(hmc5883Config);
-
-
+    mag.init();
     LED1_OFF;
     magInit = 1;
 }
 
-#define COMPASS_UPDATE_FREQUENCY_10HZ (1000 * 100)
-
 void updateCompass(flightDynamicsTrims_t *magZero)
 {
-    static uint32_t nextUpdateAt, tCal = 0;
+    static uint32_t tCal = 0;
     static flightDynamicsTrims_t magZeroTempMin;
     static flightDynamicsTrims_t magZeroTempMax;
     uint32_t axis;
 
-    if ((int32_t)(currentTime - nextUpdateAt) < 0)
-        return;
-
-    nextUpdateAt = currentTime + COMPASS_UPDATE_FREQUENCY_10HZ;
-
-    hmc5883lRead(magADC);
+    mag.read(magADC);
     alignSensors(magADC, magADC, magAlign);
 
     if (STATE(CALIBRATE_MAG)) {
-        tCal = nextUpdateAt;
+        tCal = currentTime;
         for (axis = 0; axis < 3; axis++) {
             magZero->raw[axis] = 0;
             magZeroTempMin.raw[axis] = magADC[axis];
@@ -108,7 +84,7 @@ void updateCompass(flightDynamicsTrims_t *magZero)
     }
 
     if (tCal != 0) {
-        if ((nextUpdateAt - tCal) < 30000000) {    // 30s: you have 30s to turn the multi in all directions
+        if ((currentTime - tCal) < 30000000) {    // 30s: you have 30s to turn the multi in all directions
             LED0_TOGGLE;
             for (axis = 0; axis < 3; axis++) {
                 if (magADC[axis] < magZeroTempMin.raw[axis])

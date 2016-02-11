@@ -19,7 +19,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #ifdef TELEMETRY
 
@@ -38,73 +38,31 @@
 #include "telemetry/telemetry.h"
 #include "telemetry/frsky.h"
 #include "telemetry/hott.h"
-#include "telemetry/msp.h"
-
-
-static bool isTelemetryConfigurationValid = false; // flag used to avoid repeated configuration checks
-static bool telemetryEnabled = false;
-static bool telemetryPortIsShared;
+#include "telemetry/smartport.h"
+#include "telemetry/ltm.h"
 
 static telemetryConfig_t *telemetryConfig;
 
-void useTelemetryConfig(telemetryConfig_t *telemetryConfigToUse)
+void telemetryUseConfig(telemetryConfig_t *telemetryConfigToUse)
 {
     telemetryConfig = telemetryConfigToUse;
 }
 
-bool isTelemetryProviderFrSky(void)
+void telemetryInit(void)
 {
-    return telemetryConfig->telemetry_provider == TELEMETRY_PROVIDER_FRSKY;
+    initFrSkyTelemetry(telemetryConfig);
+    initHoTTTelemetry(telemetryConfig);
+    initSmartPortTelemetry(telemetryConfig);
+    initLtmTelemetry(telemetryConfig);
+
+    telemetryCheckState();
 }
 
-bool isTelemetryProviderHoTT(void)
+bool telemetryDetermineEnabledState(portSharing_e portSharing)
 {
-    return telemetryConfig->telemetry_provider == TELEMETRY_PROVIDER_HOTT;
-}
+    bool enabled = portSharing == PORTSHARING_NOT_SHARED;
 
-bool isTelemetryProviderMSP(void)
-{
-    return telemetryConfig->telemetry_provider == TELEMETRY_PROVIDER_MSP;
-}
-
-bool canUseTelemetryWithCurrentConfiguration(void)
-{
-    if (!feature(FEATURE_TELEMETRY)) {
-        return false;
-    }
-
-    if (!canOpenSerialPort(FUNCTION_TELEMETRY)) {
-        return false;
-    }
-
-    return true;
-}
-
-void initTelemetry()
-{
-    telemetryPortIsShared = isSerialPortFunctionShared(FUNCTION_TELEMETRY, FUNCTION_MSP);
-    isTelemetryConfigurationValid = canUseTelemetryWithCurrentConfiguration();
-
-    if (isTelemetryProviderFrSky()) {
-        initFrSkyTelemetry(telemetryConfig);
-    }
-
-    if (isTelemetryProviderHoTT()) {
-        initHoTTTelemetry(telemetryConfig);
-    }
-
-    if (isTelemetryProviderMSP()) {
-        initMSPTelemetry(telemetryConfig);
-    }
-
-    checkTelemetryState();
-}
-
-bool determineNewTelemetryEnabledState(void)
-{
-    bool enabled = true;
-
-    if (telemetryPortIsShared) {
+    if (portSharing == PORTSHARING_SHARED) {
         if (telemetryConfig->telemetry_switch)
             enabled = IS_RC_MODE_ACTIVE(BOXTELEMETRY);
         else
@@ -114,97 +72,20 @@ bool determineNewTelemetryEnabledState(void)
     return enabled;
 }
 
-bool shouldChangeTelemetryStateNow(bool newState)
+void telemetryCheckState(void)
 {
-    return newState != telemetryEnabled;
+    checkFrSkyTelemetryState();
+    checkHoTTTelemetryState();
+    checkSmartPortTelemetryState();
+    checkLtmTelemetryState();
 }
 
-uint32_t getTelemetryProviderBaudRate(void)
+void telemetryProcess(rxConfig_t *rxConfig, uint16_t deadband3d_throttle)
 {
-    if (isTelemetryProviderFrSky()) {
-        return getFrSkyTelemetryProviderBaudRate();
-    }
-
-    if (isTelemetryProviderHoTT()) {
-        return getHoTTTelemetryProviderBaudRate();
-    }
-
-    if (isTelemetryProviderMSP()) {
-        return getMSPTelemetryProviderBaudRate();
-    }
-    return 0;
+    handleFrSkyTelemetry(rxConfig, deadband3d_throttle);
+    handleHoTTTelemetry();
+    handleSmartPortTelemetry();
+    handleLtmTelemetry();
 }
 
-static void configureTelemetryPort(void)
-{
-    if (isTelemetryProviderFrSky()) {
-        configureFrSkyTelemetryPort();
-    }
-
-    if (isTelemetryProviderHoTT()) {
-        configureHoTTTelemetryPort();
-    }
-
-    if (isTelemetryProviderMSP()) {
-        configureMSPTelemetryPort();
-    }
-}
-
-
-void freeTelemetryPort(void)
-{
-    if (isTelemetryProviderFrSky()) {
-        freeFrSkyTelemetryPort();
-    }
-
-    if (isTelemetryProviderHoTT()) {
-        freeHoTTTelemetryPort();
-    }
-
-    if (isTelemetryProviderMSP()) {
-        freeMSPTelemetryPort();
-    }
-}
-
-void checkTelemetryState(void)
-{
-    if (!isTelemetryConfigurationValid) {
-        return;
-    }
-
-    bool newEnabledState = determineNewTelemetryEnabledState();
-
-    if (!shouldChangeTelemetryStateNow(newEnabledState)) {
-        return;
-    }
-
-    if (newEnabledState)
-        configureTelemetryPort();
-    else
-        freeTelemetryPort();
-
-    telemetryEnabled = newEnabledState;
-}
-
-void handleTelemetry(void)
-{
-    if (!isTelemetryConfigurationValid || !determineNewTelemetryEnabledState())
-        return;
-
-    if (!telemetryEnabled) {
-        return;
-    }
-
-    if (isTelemetryProviderFrSky()) {
-        handleFrSkyTelemetry();
-    }
-
-    if (isTelemetryProviderHoTT()) {
-        handleHoTTTelemetry();
-    }
-
-    if (isTelemetryProviderMSP()) {
-        handleMSPTelemetry();
-    }
-}
 #endif

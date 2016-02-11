@@ -18,11 +18,21 @@
 #pragma once
 
 typedef struct hmc5883Config_s {
+#ifdef STM32F303
+    uint32_t gpioAHBPeripherals;
+#endif
+#ifdef STM32F10X
     uint32_t gpioAPB2Peripherals;
+#endif
     uint16_t gpioPin;
     GPIO_TypeDef *gpioPort;
+
+    uint8_t exti_port_source;
+    uint32_t exti_line;
+    uint8_t exti_pin_source;
+    IRQn_Type exti_irqn;
 } hmc5883Config_t;
 
-bool hmc5883lDetect(void);
-void hmc5883lInit(hmc5883Config_t *hmc5883Config);
-void hmc5883lRead(int16_t *magData);
+bool hmc5883lDetect(mag_t* mag, const hmc5883Config_t *hmc5883ConfigToUse);
+void hmc5883lInit(void);
+bool hmc5883lRead(int16_t *magData);

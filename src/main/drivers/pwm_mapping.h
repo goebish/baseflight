@@ -16,12 +16,20 @@
  */
 
 #pragma once
+#include "gpio.h"
+#include "timer.h"
 
+#ifdef USE_QUAD_MIXER_ONLY
+#define MAX_PWM_MOTORS  4
+#define MAX_PWM_SERVOS  1
+#define MAX_MOTORS  4
+#define MAX_SERVOS  1
+#else
 #define MAX_PWM_MOTORS  12
 #define MAX_PWM_SERVOS  8
-
 #define MAX_MOTORS  12
 #define MAX_SERVOS  8
+#endif
 #define MAX_PWM_OUTPUT_PORTS MAX_PWM_MOTORS // must be set to the largest of either MAX_MOTORS or MAX_SERVOS
 
 #if MAX_PWM_OUTPUT_PORTS < MAX_MOTORS || MAX_PWM_OUTPUT_PORTS < MAX_SERVOS
@@ -34,35 +42,77 @@
 #define MAX_INPUTS  8
 
 #define PWM_TIMER_MHZ 1
+#define ONESHOT125_TIMER_MHZ 8
+#define PWM_BRUSHED_TIMER_MHZ 8
 
-typedef struct drv_pwm_config_t {
+
+typedef struct sonarGPIOConfig_s {
+    GPIO_TypeDef *gpio;
+    uint16_t triggerPin;
+    uint16_t echoPin;
+} sonarGPIOConfig_t;
+
+typedef struct drv_pwm_config_s {
     bool useParallelPWM;
     bool usePPM;
+    bool useSerialRx;
     bool useRSSIADC;
     bool useCurrentMeterADC;
 #ifdef STM32F10X
     bool useUART2;
 #endif
+#ifdef STM32F303xC
+    bool useUART3;
+#endif
     bool useVbat;
+    bool useOneshot;
     bool useSoftSerial;
     bool useLEDStrip;
+#ifdef SONAR
+    bool useSonar;
+#endif
+#ifdef USE_SERVOS
     bool useServos;
-    bool extraServos;    // configure additional 4 channels in PPM mode as servos, not motors
+    bool useChannelForwarding;    // configure additional channels as servos
+    uint16_t servoPwmRate;
+    uint16_t servoCenterPulse;
+#endif
     bool airplane;       // fixed wing hardware config, lots of servos etc
     uint16_t motorPwmRate;
-    uint16_t servoPwmRate;
-    uint16_t idlePulse;  // PWM value to use when initializing the driver. set this to either PULSE_1MS (regular pwm), 
+    uint16_t idlePulse;  // PWM value to use when initializing the driver. set this to either PULSE_1MS (regular pwm),
                          // some higher value (used by 3d mode), or 0, for brushed pwm drivers.
-    uint16_t servoCenterPulse;
+    sonarGPIOConfig_t *sonarGPIOConfig;
 } drv_pwm_config_t;
 
 
-typedef struct pwmOutputConfiguration_s {
+typedef enum {
+    PWM_PF_NONE = 0,
+    PWM_PF_MOTOR = (1 << 0),
+    PWM_PF_SERVO = (1 << 1),
+    PWM_PF_MOTOR_MODE_BRUSHED = (1 << 2),
+    PWM_PF_OUTPUT_PROTOCOL_PWM = (1 << 3),
+    PWM_PF_OUTPUT_PROTOCOL_ONESHOT = (1 << 4),
+    PWM_PF_PPM = (1 << 5),
+    PWM_PF_PWM = (1 << 6)
+} pwmPortFlags_e;
+
+
+typedef struct pwmPortConfiguration_s {
+    uint8_t index;
+    pwmPortFlags_e flags;
+    const timerHardware_t *timerHardware;
+} pwmPortConfiguration_t;
+
+typedef struct pwmIOConfiguration_s {
     uint8_t servoCount;
     uint8_t motorCount;
-} pwmOutputConfiguration_t;
+    uint8_t ioCount;
+    uint8_t pwmInputCount;
+    uint8_t ppmInputCount;
+    pwmPortConfiguration_t ioConfigurations[USABLE_TIMER_CHANNEL_COUNT];
+} pwmIOConfiguration_t;
 
-// This indexes into the read-only hardware definition structure, timerHardware_t, as well as into pwmPorts structure with dynamic data.
+// This indexes into the read-only hardware definition structure, timerHardware_t
 enum {
     PWM1 = 0,
     PWM2,
@@ -77,5 +127,9 @@ enum {
     PWM11,
     PWM12,
     PWM13,
-    PWM14
+    PWM14,
+    PWM15,
+    PWM16
 };
+
+pwmIOConfiguration_t *pwmGetOutputConfiguration(void);

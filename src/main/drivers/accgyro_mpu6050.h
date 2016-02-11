@@ -17,13 +17,5 @@
 
 #pragma once
 
-typedef struct mpu6050Config_s {
-    uint32_t gpioAPB2Peripherals;
-    uint16_t gpioPin;
-    GPIO_TypeDef *gpioPort;
-} mpu6050Config_t;
-
-bool mpu6050AccDetect(const mpu6050Config_t *config,acc_t *acc);
-bool mpu6050GyroDetect(const mpu6050Config_t *config, gyro_t *gyro, uint16_t lpf);
-void mpu6050DmpLoop(void);
-void mpu6050DmpResetFifo(void);
+bool mpu6050AccDetect(acc_t *acc);
+bool mpu6050GyroDetect(gyro_t *gyro);

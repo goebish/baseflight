@@ -24,33 +24,57 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "build_config.h"
 
+#include "common/utils.h"
 #include "gpio.h"
 #include "inverter.h"
 
 #include "serial.h"
 #include "serial_uart.h"
+#include "serial_uart_impl.h"
 
-uartPort_t *serialUSART1(uint32_t baudRate, portMode_t mode);
-uartPort_t *serialUSART2(uint32_t baudRate, portMode_t mode);
-uartPort_t *serialUSART3(uint32_t baudRate, portMode_t mode);
+static void usartConfigurePinInversion(uartPort_t *uartPort) {
+#if !defined(INVERTER) && !defined(STM32F303xC)
+    UNUSED(uartPort);
+#else
+    bool inverted = uartPort->port.options & SERIAL_INVERTED;
+
+#ifdef INVERTER
+    if (inverted && uartPort->USARTx == INVERTER_USART) {
+        // Enable hardware inverter if available.
+        INVERTER_ON;
+    }
+#endif
+
+#ifdef STM32F303xC
+    uint32_t inversionPins = 0;
+
+    if (uartPort->port.mode & MODE_TX) {
+        inversionPins |= USART_InvPin_Tx;
+    }
+    if (uartPort->port.mode & MODE_RX) {
+        inversionPins |= USART_InvPin_Rx;
+    }
+
+    USART_InvPinCmd(uartPort->USARTx, inversionPins, inverted ? ENABLE : DISABLE);
+#endif
+#endif
+}
 
 static void uartReconfigure(uartPort_t *uartPort)
 {
     USART_InitTypeDef USART_InitStructure;
+    USART_Cmd(uartPort->USARTx, DISABLE);
 
     USART_InitStructure.USART_BaudRate = uartPort->port.baudRate;
     USART_InitStructure.USART_WordLength = USART_WordLength_8b;
-    if (uartPort->port.mode & MODE_SBUS) {
-        USART_InitStructure.USART_StopBits = USART_StopBits_2;
-        USART_InitStructure.USART_Parity = USART_Parity_Even;
-    } else {
-        USART_InitStructure.USART_StopBits = USART_StopBits_1;
-        USART_InitStructure.USART_Parity = USART_Parity_No;
-    }
+
+    USART_InitStructure.USART_StopBits = (uartPort->port.options & SERIAL_STOPBITS_2) ? USART_StopBits_2 : USART_StopBits_1;
+    USART_InitStructure.USART_Parity   = (uartPort->port.options & SERIAL_PARITY_EVEN) ? USART_Parity_Even : USART_Parity_No;
+
     USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_InitStructure.USART_Mode = 0;
     if (uartPort->port.mode & MODE_RX)
@@ -59,30 +83,30 @@ static void uartReconfigure(uartPort_t *uartPort)
         USART_InitStructure.USART_Mode |= USART_Mode_Tx;
 
     USART_Init(uartPort->USARTx, &USART_InitStructure);
+
+    usartConfigurePinInversion(uartPort);
+
+    if(uartPort->port.options & SERIAL_BIDIR)
+        USART_HalfDuplexCmd(uartPort->USARTx, ENABLE);
+    else
+        USART_HalfDuplexCmd(uartPort->USARTx, DISABLE);
+
+    USART_Cmd(uartPort->USARTx, ENABLE);
 }
 
-serialPort_t *uartOpen(USART_TypeDef *USARTx, serialReceiveCallbackPtr callback, uint32_t baudRate, portMode_t mode, serialInversion_e inversion)
+serialPort_t *uartOpen(USART_TypeDef *USARTx, serialReceiveCallbackPtr callback, uint32_t baudRate, portMode_t mode, portOptions_t options)
 {
-    UNUSED(inversion);
-
     uartPort_t *s = NULL;
 
-#ifdef INVERTER
-    if (inversion == SERIAL_INVERTED && USARTx == INVERTER_USART) {
-        // Enable hardware inverter if available.
-        INVERTER_ON;
-    }
-#endif
-
     if (USARTx == USART1) {
-        s = serialUSART1(baudRate, mode);
+        s = serialUSART1(baudRate, mode, options);
 #ifdef USE_USART2
     } else if (USARTx == USART2) {
-        s = serialUSART2(baudRate, mode);
+        s = serialUSART2(baudRate, mode, options);
 #endif
 #ifdef USE_USART3
     } else if (USARTx == USART3) {
-        s = serialUSART3(baudRate, mode);
+        s = serialUSART3(baudRate, mode, options);
 #endif
     } else {
         return (serialPort_t *)s;
@@ -96,16 +120,10 @@ serialPort_t *uartOpen(USART_TypeDef *USARTx, serialReceiveCallbackPtr callback,
     s->port.callback = callback;
     s->port.mode = mode;
     s->port.baudRate = baudRate;
-
-#if 1 // FIXME use inversion on STM32F3
-    s->port.inversion = SERIAL_NOT_INVERTED;
-#else
-    s->port.inversion = inversion;
-#endif
+    s->port.options = options;
 
     uartReconfigure(s);
 
- 
     // Receive DMA or IRQ
     DMA_InitTypeDef DMA_InitStructure;
     if (mode & MODE_RX) {
@@ -170,7 +188,6 @@ void uartSetBaudRate(serialPort_t *instance, uint32_t baudRate)
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartPort->port.baudRate = baudRate;
     uartReconfigure(uartPort);
-    USART_Cmd(uartPort->USARTx, ENABLE);
 }
 
 void uartSetMode(serialPort_t *instance, portMode_t mode)
@@ -178,7 +195,6 @@ void uartSetMode(serialPort_t *instance, portMode_t mode)
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartPort->port.mode = mode;
     uartReconfigure(uartPort);
-    USART_Cmd(uartPort->USARTx, ENABLE);
 }
 
 void uartStartTxDMA(uartPort_t *s)
@@ -195,14 +211,58 @@ void uartStartTxDMA(uartPort_t *s)
     DMA_Cmd(s->txDMAChannel, ENABLE);
 }
 
-uint8_t uartTotalBytesWaiting(serialPort_t *instance)
+uint8_t uartTotalRxBytesWaiting(serialPort_t *instance)
 {
     uartPort_t *s = (uartPort_t*)instance;
-    if (s->rxDMAChannel)
-        return (s->rxDMAChannel->CNDTR - s->rxDMAPos) & (s->port.txBufferSize - 1);
-    else {
-        return (s->port.rxBufferHead - s->port.rxBufferTail) & (s->port.txBufferSize - 1);
+    if (s->rxDMAChannel) {
+        uint32_t rxDMAHead = s->rxDMAChannel->CNDTR;
+        if (rxDMAHead >= s->rxDMAPos) {
+            return rxDMAHead - s->rxDMAPos;
+        } else {
+            return s->port.rxBufferSize + rxDMAHead - s->rxDMAPos;
+        }
     }
+
+    if (s->port.rxBufferHead >= s->port.rxBufferTail) {
+        return s->port.rxBufferHead - s->port.rxBufferTail;
+    } else {
+        return s->port.rxBufferSize + s->port.rxBufferHead - s->port.rxBufferTail;
+    }
+}
+
+uint8_t uartTotalTxBytesFree(serialPort_t *instance)
+{
+    uartPort_t *s = (uartPort_t*)instance;
+
+    uint32_t bytesUsed;
+
+    if (s->port.txBufferHead >= s->port.txBufferTail) {
+        bytesUsed = s->port.txBufferHead - s->port.txBufferTail;
+    } else {
+        bytesUsed = s->port.txBufferSize + s->port.txBufferHead - s->port.txBufferTail;
+    }
+
+    if (s->txDMAChannel) {
+        /*
+         * When we queue up a DMA request, we advance the Tx buffer tail before the transfer finishes, so we must add
+         * the remaining size of that in-progress transfer here instead:
+         */
+        bytesUsed += s->txDMAChannel->CNDTR;
+
+        /*
+         * If the Tx buffer is being written to very quickly, we might have advanced the head into the buffer
+         * space occupied by the current DMA transfer. In that case the "bytesUsed" total will actually end up larger
+         * than the total Tx buffer size, because we'll end up transmitting the same buffer region twice. (So we'll be
+         * transmitting a garbage mixture of old and new bytes).
+         *
+         * Be kind to callers and pretend like our buffer can only ever be 100% full.
+         */
+        if (bytesUsed >= s->port.txBufferSize - 1) {
+            return 0;
+        }
+    }
+
+    return (s->port.txBufferSize - 1) - bytesUsed;
 }
 
 bool isUartTransmitBufferEmpty(serialPort_t *instance)
@@ -225,7 +285,11 @@ uint8_t uartRead(serialPort_t *instance)
             s->rxDMAPos = s->port.rxBufferSize;
     } else {
         ch = s->port.rxBuffer[s->port.rxBufferTail];
-        s->port.rxBufferTail = (s->port.rxBufferTail + 1) % s->port.rxBufferSize;
+        if (s->port.rxBufferTail + 1 >= s->port.rxBufferSize) {
+            s->port.rxBufferTail = 0;
+        } else {
+            s->port.rxBufferTail++;
+        }
     }
 
     return ch;
@@ -235,7 +299,11 @@ void uartWrite(serialPort_t *instance, uint8_t ch)
 {
     uartPort_t *s = (uartPort_t *)instance;
     s->port.txBuffer[s->port.txBufferHead] = ch;
-    s->port.txBufferHead = (s->port.txBufferHead + 1) % s->port.txBufferSize;
+    if (s->port.txBufferHead + 1 >= s->port.txBufferSize) {
+        s->port.txBufferHead = 0;
+    } else {
+        s->port.txBufferHead++;
+    }
 
     if (s->txDMAChannel) {
         if (!(s->txDMAChannel->CCR & 1))
@@ -248,10 +316,14 @@ void uartWrite(serialPort_t *instance, uint8_t ch)
 const struct serialPortVTable uartVTable[] = {
     {
         uartWrite,
-        uartTotalBytesWaiting,
+        uartTotalRxBytesWaiting,
+        uartTotalTxBytesFree,
         uartRead,
         uartSetBaudRate,
         isUartTransmitBufferEmpty,
         uartSetMode,
+        .writeBuf = NULL,
+        .beginWrite = NULL,
+        .endWrite = NULL,
     }
 };

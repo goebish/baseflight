@@ -17,30 +17,48 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "common/axis.h"
 #include "common/maths.h"
+#include "common/filter.h"
 
+#include "drivers/sensor.h"
 #include "drivers/accgyro.h"
-#include "flight/flight.h"
+#include "drivers/gyro_sync.h"
 #include "sensors/sensors.h"
+#include "io/beeper.h"
 #include "io/statusindicator.h"
 #include "sensors/boardalignment.h"
 
 #include "sensors/gyro.h"
 
 uint16_t calibratingG = 0;
+int16_t gyroADC[XYZ_AXIS_COUNT];
+int16_t gyroZero[FLIGHT_DYNAMICS_INDEX_COUNT] = { 0, 0, 0 };
 
 static gyroConfig_t *gyroConfig;
+static biquad_t gyroFilterState[3];
+static bool gyroFilterStateIsSet;
+static float gyroLpfCutFreq;
+int axis;
 
 gyro_t gyro;                      // gyro access functions
 sensor_align_e gyroAlign = 0;
 
-void useGyroConfig(gyroConfig_t *gyroConfigToUse)
+void useGyroConfig(gyroConfig_t *gyroConfigToUse, float gyro_lpf_hz)
 {
     gyroConfig = gyroConfigToUse;
+    gyroLpfCutFreq = gyro_lpf_hz;
+}
+
+void initGyroFilterCoefficients(void) {
+    if (gyroLpfCutFreq) {  /* Initialisation needs to happen once samplingrate is known */
+        for (axis = 0; axis < 3; axis++) BiQuadNewLpf(gyroLpfCutFreq, &gyroFilterState[axis], targetLooptime);
+        gyroFilterStateIsSet = true;
+    }
 }
 
 void gyroSetCalibrationCycles(uint16_t calibrationCyclesRequired)
@@ -87,16 +105,20 @@ static void performAcclerationCalibration(uint8_t gyroMovementCalibrationThresho
 
         if (isOnFinalGyroCalibrationCycle()) {
             float dev = devStandardDeviation(&var[axis]);
-            // check deviation and startover if idiot was moving the model
+            // check deviation and startover in case the model was moved
             if (gyroMovementCalibrationThreshold && dev > gyroMovementCalibrationThreshold) {
                 gyroSetCalibrationCycles(CALIBRATING_GYRO_CYCLES);
                 return;
             }
             gyroZero[axis] = (g[axis] + (CALIBRATING_GYRO_CYCLES / 2)) / CALIBRATING_GYRO_CYCLES;
-            blinkLedAndSoundBeeper(10, 15, 1);
         }
     }
+
+    if (isOnFinalGyroCalibrationCycle()) {
+        beeper(BEEPER_GYRO_CALIBRATED);
+    }
     calibratingG--;
+
 }
 
 static void applyGyroZero(void)
@@ -107,11 +129,22 @@ static void applyGyroZero(void)
     }
 }
 
-void gyroGetADC(void)
+void gyroUpdate(void)
 {
     // range: +/- 8192; +/- 2000 deg/sec
-    gyro.read(gyroADC);
+    if (!gyro.read(gyroADC)) {
+        return;
+    }
+
     alignSensors(gyroADC, gyroADC, gyroAlign);
+
+    if (gyroLpfCutFreq) {
+        if (!gyroFilterStateIsSet) initGyroFilterCoefficients(); /* initialise filter coefficients */
+
+        if (gyroFilterStateIsSet) {
+            for (axis = 0; axis < XYZ_AXIS_COUNT; axis++) gyroADC[axis] = lrintf(applyBiQuadFilter((float) gyroADC[axis], &gyroFilterState[axis]));
+        }
+    }
 
     if (!isGyroCalibrationComplete()) {
         performAcclerationCalibration(gyroConfig->gyroMovementCalibrationThreshold);

@@ -31,18 +31,21 @@
 
 #include "barometer_bmp085.h"
 
-// BMP085, Standard address 0x77
-static bool convDone = false;
-static uint16_t convOverrun = 0;
+#ifdef BARO
+
+#if defined(BARO_EOC_GPIO)
+static bool isConversionComplete = false;
+static bool isEOCConnected = true;
 
 // EXTI14 for BMP085 End of Conversion Interrupt
-void EXTI15_10_IRQHandler(void)
-{
+void BMP085_EOC_EXTI_Handler(void) {
     if (EXTI_GetITStatus(EXTI_Line14) == SET) {
         EXTI_ClearITPendingBit(EXTI_Line14);
-        convDone = true;
+        isConversionComplete = true;
     }
 }
+
+#endif
 
 typedef struct {
     int16_t ac1;
@@ -102,10 +105,14 @@ typedef struct {
 #define SMD500_PARAM_MH     -7357        //calibration parameter
 #define SMD500_PARAM_MI      3791        //calibration parameter
 
-static bmp085_t bmp085;
+STATIC_UNIT_TESTED bmp085_t bmp085;
+
+#define UT_DELAY    6000        // 1.5ms margin according to the spec (4.5ms T conversion time)
+#define UP_DELAY    27000       // 6000+21000=27000 1.5ms margin according to the spec (25.5ms P conversion time with OSS=3)
+
 static bool bmp085InitDone = false;
-static uint16_t bmp085_ut;  // static result of temperature measurement
-static uint32_t bmp085_up;  // static result of pressure measurement
+STATIC_UNIT_TESTED uint16_t bmp085_ut;  // static result of temperature measurement
+STATIC_UNIT_TESTED uint32_t bmp085_up;  // static result of pressure measurement
 
 static void bmp085_get_cal_param(void);
 static void bmp085_start_ut(void);
@@ -114,7 +121,7 @@ static void bmp085_start_up(void);
 static void bmp085_get_up(void);
 static int32_t bmp085_get_temperature(uint32_t ut);
 static int32_t bmp085_get_pressure(uint32_t up);
-static void bmp085_calculate(int32_t *pressure, int32_t *temperature);
+STATIC_UNIT_TESTED void bmp085_calculate(int32_t *pressure, int32_t *temperature);
 
 #ifdef BARO_XCLR_PIN
 #define BMP085_OFF                  digitalLo(BARO_XCLR_GPIO, BARO_XCLR_PIN);
@@ -129,7 +136,6 @@ void bmp085InitXCLRGpio(const bmp085Config_t *config) {
 
     RCC_APB2PeriphClockCmd(config->gpioAPB2Peripherals, ENABLE);
 
-    // PC13, PC14 (Barometer XCLR reset output, EOC input)
     gpio.pin = config->xclrGpioPin;
     gpio.speed = Speed_2MHz;
     gpio.mode = Mode_Out_PP;
@@ -145,11 +151,12 @@ void bmp085Disable(const bmp085Config_t *config)
 bool bmp085Detect(const bmp085Config_t *config, baro_t *baro)
 {
     uint8_t data;
+    bool ack;
 
     if (bmp085InitDone)
         return true;
 
-#if defined(BARO) && defined(BARO_XCLR_GPIO) && defined(BARO_EOC_GPIO)
+#if defined(BARO_XCLR_GPIO) && defined(BARO_EOC_GPIO)
     if (config) {
         EXTI_InitTypeDef EXTI_InitStructure;
         NVIC_InitTypeDef NVIC_InitStructure;
@@ -158,9 +165,11 @@ bool bmp085Detect(const bmp085Config_t *config, baro_t *baro)
         bmp085InitXCLRGpio(config);
 
         gpio.pin = config->eocGpioPin;
-        gpio.mode = Mode_IN_FLOATING;
+        gpio.mode = Mode_IPD;
         gpioInit(config->eocGpioPort, &gpio);
         BMP085_ON;
+
+        registerExtiCallbackHandler(EXTI15_10_IRQn, BMP085_EOC_EXTI_Handler);
 
         // EXTI interrupt for barometer EOC
         gpioExtiLineConfig(GPIO_PortSourceGPIOC, GPIO_PinSource14);
@@ -172,8 +181,8 @@ bool bmp085Detect(const bmp085Config_t *config, baro_t *baro)
 
         // Enable and set EXTI10-15 Interrupt to the lowest priority
         NVIC_InitStructure.NVIC_IRQChannel = EXTI15_10_IRQn;
-        NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = BARO_EXTIRQ_PRIORITY;
-        NVIC_InitStructure.NVIC_IRQChannelSubPriority = BARO_EXTIRQ_SUBPRIORITY;
+        NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_BARO_EXT);
+        NVIC_InitStructure.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(NVIC_PRIO_BARO_EXT);
         NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
         NVIC_Init(&NVIC_InitStructure);
     }
@@ -183,25 +192,40 @@ bool bmp085Detect(const bmp085Config_t *config, baro_t *baro)
 
     delay(20); // datasheet says 10ms, we'll be careful and do 20.
 
-    i2cRead(BMP085_I2C_ADDR, BMP085_CHIP_ID__REG, 1, &data); /* read Chip Id */
-    bmp085.chip_id = BMP085_GET_BITSLICE(data, BMP085_CHIP_ID);
-    bmp085.oversampling_setting = 3;
+    ack = i2cRead(BMP085_I2C_ADDR, BMP085_CHIP_ID__REG, 1, &data); /* read Chip Id */ 
+    if (ack) {
+        bmp085.chip_id = BMP085_GET_BITSLICE(data, BMP085_CHIP_ID);
+        bmp085.oversampling_setting = 3;
 
-    if (bmp085.chip_id == BMP085_CHIP_ID) { /* get bitslice */
-        i2cRead(BMP085_I2C_ADDR, BMP085_VERSION_REG, 1, &data); /* read Version reg */
-        bmp085.ml_version = BMP085_GET_BITSLICE(data, BMP085_ML_VERSION); /* get ML Version */
-        bmp085.al_version = BMP085_GET_BITSLICE(data, BMP085_AL_VERSION); /* get AL Version */
-        bmp085_get_cal_param(); /* readout bmp085 calibparam structure */
-        bmp085InitDone = true;
-        baro->ut_delay = 6000; // 1.5ms margin according to the spec (4.5ms T convetion time)
-        baro->up_delay = 27000; // 6000+21000=27000 1.5ms margin according to the spec (25.5ms P convetion time with OSS=3)
-        baro->start_ut = bmp085_start_ut;
-        baro->get_ut = bmp085_get_ut;
-        baro->start_up = bmp085_start_up;
-        baro->get_up = bmp085_get_up;
-        baro->calculate = bmp085_calculate;
-        return true;
+        if (bmp085.chip_id == BMP085_CHIP_ID) { /* get bitslice */
+            i2cRead(BMP085_I2C_ADDR, BMP085_VERSION_REG, 1, &data); /* read Version reg */
+            bmp085.ml_version = BMP085_GET_BITSLICE(data, BMP085_ML_VERSION); /* get ML Version */
+            bmp085.al_version = BMP085_GET_BITSLICE(data, BMP085_AL_VERSION); /* get AL Version */
+            bmp085_get_cal_param(); /* readout bmp085 calibparam structure */
+            baro->ut_delay = UT_DELAY;
+            baro->up_delay = UP_DELAY;
+            baro->start_ut = bmp085_start_ut;
+            baro->get_ut = bmp085_get_ut;
+            baro->start_up = bmp085_start_up;
+            baro->get_up = bmp085_get_up;
+            baro->calculate = bmp085_calculate;
+#if defined(BARO_EOC_GPIO)
+            isEOCConnected = bmp085TestEOCConnected(config);
+#endif
+            bmp085InitDone = true;
+            return true;
+        }
     }
+
+#if defined(BARO_EOC_GPIO)
+    EXTI_InitTypeDef EXTI_InitStructure;
+    EXTI_StructInit(&EXTI_InitStructure);
+    EXTI_InitStructure.EXTI_Line = EXTI_Line14;
+    EXTI_InitStructure.EXTI_LineCmd = DISABLE;
+    EXTI_Init(&EXTI_InitStructure);
+
+    unregisterExtiCallbackHandler(EXTI15_10_IRQn, BMP085_EOC_EXTI_Handler);
+#endif
 
     BMP085_OFF;
 
@@ -263,7 +287,9 @@ static int32_t bmp085_get_pressure(uint32_t up)
 
 static void bmp085_start_ut(void)
 {
-    convDone = false;
+#if defined(BARO_EOC_GPIO)
+    isConversionComplete = false;
+#endif
     i2cWrite(BMP085_I2C_ADDR, BMP085_CTRL_MEAS_REG, BMP085_T_MEASURE);
 }
 
@@ -271,9 +297,12 @@ static void bmp085_get_ut(void)
 {
     uint8_t data[2];
 
-    // wait in case of cockup
-    if (!convDone)
-        convOverrun++;
+#if defined(BARO_EOC_GPIO)
+    // return old baro value if conversion time exceeds datasheet max when EOC is connected
+    if ((isEOCConnected) && (!isConversionComplete)) {
+        return;
+    }
+#endif
 
     i2cRead(BMP085_I2C_ADDR, BMP085_ADC_OUT_MSB_REG, 2, data);
     bmp085_ut = (data[0] << 8) | data[1];
@@ -284,7 +313,11 @@ static void bmp085_start_up(void)
     uint8_t ctrl_reg_data;
 
     ctrl_reg_data = BMP085_P_MEASURE + (bmp085.oversampling_setting << 6);
-    convDone = false;
+
+#if defined(BARO_EOC_GPIO)
+    isConversionComplete = false;
+#endif
+
     i2cWrite(BMP085_I2C_ADDR, BMP085_CTRL_MEAS_REG, ctrl_reg_data);
 }
 
@@ -296,18 +329,22 @@ static void bmp085_get_up(void)
 {
     uint8_t data[3];
 
-    // wait in case of cockup
-    if (!convDone)
-        convOverrun++;
+#if defined(BARO_EOC_GPIO)
+    // return old baro value if conversion time exceeds datasheet max when EOC is connected
+    if ((isEOCConnected) && (!isConversionComplete)) {
+        return;
+    }
+#endif
 
     i2cRead(BMP085_I2C_ADDR, BMP085_ADC_OUT_MSB_REG, 3, data);
     bmp085_up = (((uint32_t) data[0] << 16) | ((uint32_t) data[1] << 8) | (uint32_t) data[2])
             >> (8 - bmp085.oversampling_setting);
 }
 
-static void bmp085_calculate(int32_t *pressure, int32_t *temperature)
+STATIC_UNIT_TESTED void bmp085_calculate(int32_t *pressure, int32_t *temperature)
 {
     int32_t temp, press;
+
     temp = bmp085_get_temperature(bmp085_ut);
     press = bmp085_get_pressure(bmp085_up);
     if (pressure)
@@ -338,3 +375,22 @@ static void bmp085_get_cal_param(void)
     bmp085.cal_param.mc = (data[18] << 8) | data[19];
     bmp085.cal_param.md = (data[20] << 8) | data[21];
 }
+
+#if defined(BARO_EOC_GPIO)
+bool bmp085TestEOCConnected(const bmp085Config_t *config)
+{
+    if (!bmp085InitDone) {
+        bmp085_start_ut();
+        delayMicroseconds(UT_DELAY * 2); // wait twice as long as normal, just to be sure
+
+        // conversion should have finished now so check if EOC is high
+        uint8_t status = GPIO_ReadInputDataBit(config->eocGpioPort, config->eocGpioPin);
+        if (status) {
+            return true;
+        }
+    } 
+    return false; // assume EOC is not connected
+}
+#endif
+
+#endif /* BARO */

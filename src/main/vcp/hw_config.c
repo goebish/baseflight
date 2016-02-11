@@ -28,7 +28,7 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "stm32_it.h"
-#include "platform.h"
+#include <platform.h>
 #include "usb_lib.h"
 #include "usb_prop.h"
 #include "usb_desc.h"
@@ -36,8 +36,14 @@
 #include "usb_pwr.h"
 
 #include <stdbool.h>
+
+#include "build_config.h"
+
 #include "drivers/system.h"
+#include "drivers/usb_io.h"
 #include "drivers/nvic.h"
+
+
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -82,30 +88,7 @@ void Set_System(void)
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_SYSCFG, ENABLE);
 #endif /* STM32L1XX_XD */ 
 
-    /*Pull down PA12 to create USB Disconnect Pulse*/     // HJI
-#if defined(STM32F303xC)                                    // HJI
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);   // HJI
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;          // HJI
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;     // HJI
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;        // HJI
-    GPIO_InitStructure.GPIO_OType = GPIO_OType_OD;        // HJI
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;     // HJI
-#else
-            RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE); // HJI
-
-            GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;// HJI
-            GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;// HJI
-            GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;// HJI
-#endif
-
-    GPIO_Init(GPIOA, &GPIO_InitStructure);                // HJI
-
-    GPIO_ResetBits(GPIOA, GPIO_Pin_12);                   // HJI
-
-    delay(200);                                           // HJI
-
-    GPIO_SetBits(GPIOA, GPIO_Pin_12);                     // HJI
+    usbGenerateDisconnectPulse();
 
 #if defined(STM32F37X) || defined(STM32F303xC)
 
@@ -123,6 +106,13 @@ void Set_System(void)
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource12, GPIO_AF_14);
 
 #endif /* STM32F37X  && STM32F303xC)*/
+#if defined(STM32F10X)
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11 | GPIO_Pin_12;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_OD;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+#endif
 
     /* Configure the EXTI line 18 connected internally to the USB IP */
     EXTI_ClearITPendingBit(EXTI_Line18);
@@ -195,15 +185,15 @@ void USB_Interrupts_Config(void)
 
     /* Enable the USB interrupt */
     NVIC_InitStructure.NVIC_IRQChannel = USB_LP_CAN1_RX0_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = USB_IRQ_PRIORITY;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = USB_IRQ_SUBPRIORITY;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_USB);
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(NVIC_PRIO_USB);
     NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
 
     /* Enable the USB Wake-up interrupt */
     NVIC_InitStructure.NVIC_IRQChannel = USBWakeUp_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = USB_WUP_IRQ_PRIORITY;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = USB_WUP_IRQ_SUBPRIORITY;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_USB_WUP);
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(NVIC_PRIO_USB_WUP);
     NVIC_Init(&NVIC_InitStructure);
 }
 
@@ -215,7 +205,7 @@ void USB_Interrupts_Config(void)
  *******************************************************************************/
 void USB_Cable_Config(FunctionalState NewState)
 {
-
+    UNUSED(NewState);
 }
 
 /*******************************************************************************

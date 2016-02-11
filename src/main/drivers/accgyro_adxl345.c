@@ -23,6 +23,7 @@
 #include "system.h"
 #include "bus_i2c.h"
 
+#include "sensor.h"
 #include "accgyro.h"
 #include "accgyro_adxl345.h"
 
@@ -56,7 +57,7 @@
 #define ADXL345_FIFO_STREAM 0x80
 
 static void adxl345Init(void);
-static void adxl345Read(int16_t *accelData);
+static bool adxl345Read(int16_t *accelData);
 
 static bool useFifo = false;
 
@@ -95,7 +96,7 @@ static void adxl345Init(void)
 
 uint8_t acc_samples = 0;
 
-static void adxl345Read(int16_t *accelData)
+static bool adxl345Read(int16_t *accelData)
 {
     uint8_t buf[8];
 
@@ -108,7 +109,11 @@ static void adxl345Read(int16_t *accelData)
 
         do {
             i++;
-            i2cRead(ADXL345_ADDRESS, ADXL345_DATA_OUT, 8, buf);
+
+            if (!i2cRead(ADXL345_ADDRESS, ADXL345_DATA_OUT, 8, buf)) {
+                return false;
+            }
+
             x += (int16_t)(buf[0] + (buf[1] << 8));
             y += (int16_t)(buf[2] + (buf[3] << 8));
             z += (int16_t)(buf[4] + (buf[5] << 8));
@@ -119,9 +124,15 @@ static void adxl345Read(int16_t *accelData)
         accelData[2] = z / i;
         acc_samples = i;
     } else {
-        i2cRead(ADXL345_ADDRESS, ADXL345_DATA_OUT, 6, buf);
+
+        if (!i2cRead(ADXL345_ADDRESS, ADXL345_DATA_OUT, 6, buf)) {
+            return false;
+        }
+
         accelData[0] = buf[0] + (buf[1] << 8);
         accelData[1] = buf[2] + (buf[3] << 8);
         accelData[2] = buf[4] + (buf[5] << 8);
     }
+
+    return true;
 }

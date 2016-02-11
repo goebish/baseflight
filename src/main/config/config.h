@@ -19,8 +19,9 @@
 
 #define MAX_PROFILE_COUNT 3
 #define MAX_CONTROL_RATE_PROFILE_COUNT 3
+#define ONESHOT_FEATURE_CHANGED_DELAY_ON_BOOT_MS 1500
 
-
+// Keep synchronized with featureNames[] in serial_cli.c
 typedef enum {
     FEATURE_RX_PPM = 1 << 0,
     FEATURE_VBAT = 1 << 1,
@@ -39,9 +40,16 @@ typedef enum {
     FEATURE_RX_MSP = 1 << 14,
     FEATURE_RSSI_ADC = 1 << 15,
     FEATURE_LED_STRIP = 1 << 16,
-    FEATURE_DISPLAY = 1 << 17
+    FEATURE_DISPLAY = 1 << 17,
+    FEATURE_ONESHOT125 = 1 << 18,
+    FEATURE_BLACKBOX = 1 << 19,
+    FEATURE_CHANNEL_FORWARDING = 1 << 20,
+    FEATURE_TRANSPONDER = 1 << 21,
 } features_e;
 
+void handleOneshotFeatureChangeOnRestart(void);
+void latchActiveFeatures(void);
+bool featureConfigured(uint32_t mask);
 bool feature(uint32_t mask);
 void featureSet(uint32_t mask);
 void featureClear(uint32_t mask);
@@ -66,3 +74,4 @@ void changeControlRateProfile(uint8_t profileIndex);
 
 bool canSoftwareSerialBeUsed(void);
 
+uint16_t getCurrentMinthrottle(void);

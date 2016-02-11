@@ -18,7 +18,12 @@
 #include <stdint.h>
 
 #include <limits.h>
-#include "flight/gps_conversion.h"
+
+//#ifdef DEBUG_GPS_CONVERSION
+
+extern "C" {
+    #include "flight/gps_conversion.h"
+}
 
 #include "unittest_macros.h"
 #include "gtest/gtest.h"
@@ -33,7 +38,7 @@ TEST(GpsConversionTest, GPSCoordToDegrees_BadString)
 }
 
 typedef struct gpsConversionExpectation_s {
-    char *coord;
+    const char *coord;
     uint32_t degrees;
 } gpsConversionExpectation_t;
 
@@ -60,8 +65,9 @@ TEST(GpsConversionTest, GPSCoordToDegrees_NMEA_Values)
 
     for (uint8_t index = 0; index < testIterationCount; index ++) {
         const gpsConversionExpectation_t *expectation = &gpsConversionExpectations[index];
+#ifdef DEBUG_GPS_CONVERSION
         printf("iteration: %d\n", index);
-
+#endif
         uint32_t result = GPS_coord_to_degrees(expectation->coord);
         EXPECT_EQ(result, expectation->degrees);
     }

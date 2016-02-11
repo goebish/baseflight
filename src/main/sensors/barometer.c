@@ -19,11 +19,13 @@
 #include <stdint.h>
 #include <math.h>
 
-#include "platform.h"
+#include <platform.h>
+#include "scheduler.h"
 
 #include "common/maths.h"
 
 #include "drivers/barometer.h"
+#include "drivers/system.h"
 #include "config/config.h"
 
 #include "sensors/barometer.h"
@@ -40,7 +42,7 @@ static int32_t baroGroundAltitude = 0;
 static int32_t baroGroundPressure = 0;
 static uint32_t baroPressureSum = 0;
 
-barometerConfig_t *barometerConfig;
+static barometerConfig_t *barometerConfig;
 
 void useBarometerConfig(barometerConfig_t *barometerConfigToUse)
 {
@@ -59,6 +61,30 @@ void baroSetCalibrationCycles(uint16_t calibrationCyclesRequired)
 
 static bool baroReady = false;
 
+#define PRESSURE_SAMPLES_MEDIAN 3
+
+static int32_t applyBarometerMedianFilter(int32_t newPressureReading)
+{
+    static int32_t barometerFilterSamples[PRESSURE_SAMPLES_MEDIAN];
+    static int currentFilterSampleIndex = 0;
+    static bool medianFilterReady = false;
+    int nextSampleIndex;
+    
+    nextSampleIndex = (currentFilterSampleIndex + 1);
+    if (nextSampleIndex == PRESSURE_SAMPLES_MEDIAN) {
+        nextSampleIndex = 0;
+        medianFilterReady = true;
+    }
+
+    barometerFilterSamples[currentFilterSampleIndex] = newPressureReading;
+    currentFilterSampleIndex = nextSampleIndex;
+    
+    if (medianFilterReady)
+        return quickMedianFilter3(barometerFilterSamples);
+    else
+        return newPressureReading;
+}
+
 #define PRESSURE_SAMPLE_COUNT (barometerConfig->baro_sample_count - 1)
 
 static uint32_t recalculateBarometerTotal(uint8_t baroSampleCount, uint32_t pressureTotal, int32_t newPressureReading)
@@ -73,7 +99,7 @@ static uint32_t recalculateBarometerTotal(uint8_t baroSampleCount, uint32_t pres
         nextSampleIndex = 0;
         baroReady = true;
     }
-    barometerSamples[currentSampleIndex] = newPressureReading;
+    barometerSamples[currentSampleIndex] = applyBarometerMedianFilter(newPressureReading);
 
     // recalculate pressure total
     // Note, the pressure total is made up of baroSampleCount - 1 samples - See PRESSURE_SAMPLE_COUNT
@@ -87,8 +113,7 @@ static uint32_t recalculateBarometerTotal(uint8_t baroSampleCount, uint32_t pres
 
 typedef enum {
     BAROMETER_NEEDS_SAMPLES = 0,
-    BAROMETER_NEEDS_CALCULATION,
-    BAROMETER_NEEDS_PROCESSING
+    BAROMETER_NEEDS_CALCULATION
 } barometerState_e;
 
 
@@ -96,35 +121,26 @@ bool isBaroReady(void) {
 	return baroReady;
 }
 
-void baroUpdate(uint32_t currentTime)
+uint32_t baroUpdate(void)
 {
-    static uint32_t baroDeadline = 0;
     static barometerState_e state = BAROMETER_NEEDS_SAMPLES;
 
-    if ((int32_t)(currentTime - baroDeadline) < 0)
-        return;
-
-    baroDeadline = currentTime;
-
     switch (state) {
+        default:
         case BAROMETER_NEEDS_SAMPLES:
             baro.get_ut();
             baro.start_up();
             state = BAROMETER_NEEDS_CALCULATION;
-            baroDeadline += baro.up_delay;
+            return baro.up_delay;
         break;
 
         case BAROMETER_NEEDS_CALCULATION:
             baro.get_up();
             baro.start_ut();
-            baroDeadline += baro.ut_delay;
             baro.calculate(&baroPressure, &baroTemperature);
-            state = BAROMETER_NEEDS_PROCESSING;
-        break;
-
-        case BAROMETER_NEEDS_PROCESSING:
-            state = BAROMETER_NEEDS_SAMPLES;
             baroPressureSum = recalculateBarometerTotal(barometerConfig->baro_sample_count, baroPressureSum, baroPressure);
+            state = BAROMETER_NEEDS_SAMPLES;
+            return baro.ut_delay;
         break;
     }
 }

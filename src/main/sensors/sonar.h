@@ -17,9 +17,14 @@
 
 #pragma once
 
-extern int32_t sonarAlt;
+#define SONAR_OUT_OF_RANGE (-1)
 
-void Sonar_init(void);
-void Sonar_update(void);
+extern int16_t sonarMaxRangeCm;
+extern int16_t sonarCfAltCm;
+extern int16_t sonarMaxAltWithTiltCm;
 
-int32_t sonarCalculateAltitude(int32_t sonarAlt, int16_t tiltAngle);
+void sonarUpdate(void);
+int32_t sonarRead(void);
+int32_t sonarCalculateAltitude(int32_t sonarDistance, float cosTiltAngle);
+int32_t sonarGetLatestAltitude(void);
+

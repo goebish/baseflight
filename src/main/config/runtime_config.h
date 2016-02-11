@@ -27,8 +27,8 @@ typedef enum {
 extern uint8_t armingFlags;
 
 #define DISABLE_ARMING_FLAG(mask) (armingFlags &= ~(mask))
-#define ENABLE_ARMING_FLAG(mask) (armingFlags |= mask)
-#define ARMING_FLAG(mask) (armingFlags & mask)
+#define ENABLE_ARMING_FLAG(mask) (armingFlags |= (mask))
+#define ARMING_FLAG(mask) (armingFlags & (mask))
 
 typedef enum {
     ANGLE_MODE      = (1 << 0),
@@ -38,16 +38,18 @@ typedef enum {
     GPS_HOME_MODE   = (1 << 4),
     GPS_HOLD_MODE   = (1 << 5),
     HEADFREE_MODE   = (1 << 6),
-    AUTOTUNE_MODE   = (1 << 7),
+    UNUSED_MODE     = (1 << 7), // old autotune
     PASSTHRU_MODE   = (1 << 8),
     SONAR_MODE      = (1 << 9),
+    FAILSAFE_MODE   = (1 << 10),
+    GTUNE_MODE      = (1 << 11),
 } flightModeFlags_e;
 
 extern uint16_t flightModeFlags;
 
-#define DISABLE_FLIGHT_MODE(mask) (flightModeFlags &= ~(mask))
-#define ENABLE_FLIGHT_MODE(mask) (flightModeFlags |= mask)
-#define FLIGHT_MODE(mask) (flightModeFlags & mask)
+#define DISABLE_FLIGHT_MODE(mask) disableFlightMode(mask)
+#define ENABLE_FLIGHT_MODE(mask) enableFlightMode(mask)
+#define FLIGHT_MODE(mask) (flightModeFlags & (mask))
 
 typedef enum {
     GPS_FIX_HOME   = (1 << 0),
@@ -58,11 +60,13 @@ typedef enum {
 } stateFlags_t;
 
 #define DISABLE_STATE(mask) (stateFlags &= ~(mask))
-#define ENABLE_STATE(mask) (stateFlags |= mask)
-#define STATE(mask) (stateFlags & mask)
+#define ENABLE_STATE(mask) (stateFlags |= (mask))
+#define STATE(mask) (stateFlags & (mask))
 
 extern uint8_t stateFlags;
 
+uint16_t enableFlightMode(flightModeFlags_e mask);
+uint16_t disableFlightMode(flightModeFlags_e mask);
 
 bool sensors(uint32_t mask);
 void sensorsSet(uint32_t mask);

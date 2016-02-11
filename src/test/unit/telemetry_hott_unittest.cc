@@ -22,27 +22,29 @@
 #include <limits.h>
 
 extern "C" {
-    #include "platform.h"
+    #include "debug.h"
+
+    #include <platform.h>
 
     #include "common/axis.h"
 
     #include "drivers/system.h"
-
     #include "drivers/serial.h"
-    #include "io/serial.h"
 
-    #include "config/runtime_config.h"
+    #include "io/rc_controls.h"
+    #include "io/serial.h"
+    #include "io/gps.h"
 
     #include "sensors/sensors.h"
-
-    #include "flight/flight.h"
-    #include "io/gps.h"
     #include "sensors/battery.h"
 
     #include "telemetry/telemetry.h"
     #include "telemetry/hott.h"
 
+    #include "flight/pid.h"
     #include "flight/gps_conversion.h"
+
+    #include "config/runtime_config.h"
 }
 
 #include "unittest_macros.h"
@@ -135,7 +137,7 @@ TEST(TelemetryHottTest, PrepareGPSMessage_Altitude1m)
 
     stateFlags = GPS_FIX;
     uint16_t altitudeInMeters = 1;
-    GPS_altitude = altitudeInMeters * (1 / 0.1f); // 1 = 0.1m
+    GPS_altitude = altitudeInMeters;
 
     // when
     hottPrepareGPSResponse(hottGPSMessage);
@@ -149,25 +151,39 @@ TEST(TelemetryHottTest, PrepareGPSMessage_Altitude1m)
 
 extern "C" {
 
-int16_t debug[4];
+int16_t debug[DEBUG16_VALUE_COUNT];
 
 uint8_t stateFlags;
+
+uint16_t batteryWarningVoltage;
+uint8_t useHottAlarmSoundPeriod (void) { return 0; }
 
 
 uint8_t GPS_numSat;
 int32_t GPS_coord[2];
 uint16_t GPS_speed;                 // speed in 0.1m/s
 uint16_t GPS_distanceToHome;        // distance to home point in meters
-uint16_t GPS_altitude;              // altitude in 0.1m
-uint8_t vbat;
+uint16_t GPS_altitude;              // altitude in m
+uint16_t vbat;
 int16_t GPS_directionToHome;        // direction to home or hol point in degrees
 
 int32_t amperage;
 int32_t mAhDrawn;
 
+uint32_t fixedMillis = 0;
+
+uint32_t millis(void) {
+    return fixedMillis;
+}
+
 uint32_t micros(void) { return 0; }
 
-uint8_t serialTotalBytesWaiting(serialPort_t *instance) {
+uint8_t serialRxBytesWaiting(serialPort_t *instance) {
+    UNUSED(instance);
+    return 0;
+}
+
+uint8_t serialTxBytesFree(serialPort_t *instance) {
     UNUSED(instance);
     return 0;
 }
@@ -187,39 +203,43 @@ void serialSetMode(serialPort_t *instance, portMode_t mode) {
     UNUSED(mode);
 }
 
-void serialSetBaudRate(serialPort_t *instance, uint32_t baudRate) {
-    UNUSED(instance);
-    UNUSED(baudRate);
-}
 
-void beginSerialPortFunction(serialPort_t *port, serialPortFunction_e function) {
-    UNUSED(port);
-    UNUSED(function);
-}
-
-void endSerialPortFunction(serialPort_t *port, serialPortFunction_e function) {
-    UNUSED(port);
-    UNUSED(function);
-}
-
-serialPort_t *openSerialPort(serialPortFunction_e functionMask, serialReceiveCallbackPtr callback, uint32_t baudRate, portMode_t mode, serialInversion_e inversion) {
+serialPort_t *openSerialPort(serialPortIdentifier_e identifier, serialPortFunction_e functionMask, serialReceiveCallbackPtr callback, uint32_t baudRate, portMode_t mode, portOptions_t options) {
+    UNUSED(identifier);
     UNUSED(functionMask);
     UNUSED(baudRate);
     UNUSED(callback);
     UNUSED(mode);
-    UNUSED(inversion);
+    UNUSED(options);
 
     return NULL;
 }
 
-serialPort_t *findOpenSerialPort(uint16_t functionMask) {
-    UNUSED(functionMask);
+void closeSerialPort(serialPort_t *serialPort) {
+    UNUSED(serialPort);
+}
+
+serialPortConfig_t *findSerialPortConfig(serialPortFunction_e function) {
+    UNUSED(function);
+
     return NULL;
 }
 
 bool sensors(uint32_t mask) {
     UNUSED(mask);
     return false;
+}
+
+bool telemetryDetermineEnabledState(portSharing_e) {
+    return true;
+}
+
+portSharing_e determinePortSharing(serialPortConfig_t *, serialPortFunction_e) {
+    return PORTSHARING_NOT_SHARED;
+}
+
+batteryState_e getBatteryState(void) {
+	return BATTERY_OK;
 }
 
 }

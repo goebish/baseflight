@@ -42,7 +42,7 @@ static void i2c_er_handler(void);
 static void i2c_ev_handler(void);
 static void i2cUnstick(void);
 
-typedef struct i2cDevice_t {
+typedef struct i2cDevice_s {
     I2C_TypeDef *dev;
     GPIO_TypeDef *gpio;
     uint16_t scl;
@@ -61,6 +61,11 @@ static const i2cDevice_t i2cHardwareMap[] = {
 static I2C_TypeDef *I2Cx = NULL;
 // Copy of device index for reinit, etc purposes
 static I2CDevice I2Cx_index;
+static bool i2cOverClock;
+
+void i2cSetOverclock(uint8_t OverClock) {
+    i2cOverClock = (OverClock) ? true : false;
+}
 
 void I2C1_ER_IRQHandler(void)
 {
@@ -184,7 +189,7 @@ bool i2cRead(uint8_t addr_, uint8_t reg_, uint8_t len, uint8_t* buf)
 static void i2c_er_handler(void)
 {
     // Read the I2Cx status register
-    volatile uint32_t SR1Register = I2Cx->SR1;
+    uint32_t SR1Register = I2Cx->SR1;
 
     if (SR1Register & 0x0F00) {                                         // an error
         error = true;
@@ -325,6 +330,9 @@ void i2cInit(I2CDevice index)
     I2Cx_index = index;
     RCC_APB1PeriphClockCmd(i2cHardwareMap[index].peripheral, ENABLE);
 
+    // diable I2C interrrupts first to avoid ER handler triggering
+    I2C_ITConfig(I2Cx, I2C_IT_EVT | I2C_IT_ERR, DISABLE);
+
     // clock out stuff to make sure slaves arent stuck
     // This will also configure GPIO as AF_OD at the end
     i2cUnstick();
@@ -333,25 +341,31 @@ void i2cInit(I2CDevice index)
     I2C_DeInit(I2Cx);
     I2C_StructInit(&i2c);
 
-    I2C_ITConfig(I2Cx, I2C_IT_EVT | I2C_IT_ERR, DISABLE);               // Enable EVT and ERR interrupts - they are enabled by the first request
+    I2C_ITConfig(I2Cx, I2C_IT_EVT | I2C_IT_ERR, DISABLE);               // Disable EVT and ERR interrupts - they are enabled by the first request
     i2c.I2C_Mode = I2C_Mode_I2C;
     i2c.I2C_DutyCycle = I2C_DutyCycle_2;
     i2c.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-    i2c.I2C_ClockSpeed = 400000;
+
+    if (i2cOverClock) {
+        i2c.I2C_ClockSpeed = 800000; // 800khz Maximum speed tested on various boards without issues
+    } else {
+        i2c.I2C_ClockSpeed = 400000; // 400khz Operation according specs
+    }
+
     I2C_Cmd(I2Cx, ENABLE);
     I2C_Init(I2Cx, &i2c);
 
     // I2C ER Interrupt
     nvic.NVIC_IRQChannel = i2cHardwareMap[index].er_irq;
-    nvic.NVIC_IRQChannelPreemptionPriority = I2C_ER_IRQ_PRIORITY;
-    nvic.NVIC_IRQChannelSubPriority = I2C_ER_IRQ_SUBPRIORITY;
+    nvic.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_I2C_ER);
+    nvic.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(NVIC_PRIO_I2C_ER);
     nvic.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&nvic);
 
     // I2C EV Interrupt
     nvic.NVIC_IRQChannel = i2cHardwareMap[index].ev_irq;
-    nvic.NVIC_IRQChannelPreemptionPriority = I2C_EV_IRQ_PRIORITY;
-    nvic.NVIC_IRQChannelSubPriority = I2C_EV_IRQ_SUBPRIORITY;
+    nvic.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_I2C_EV);
+    nvic.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(NVIC_PRIO_I2C_EV);
     NVIC_Init(&nvic);
 }
 

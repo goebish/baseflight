@@ -19,9 +19,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "gpio.h"
+#include "system.h"
 
 #define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
 
@@ -57,7 +58,7 @@ void enableGPIOPowerUsageAndNoiseReductions(void)
 
     gpio.mode = Mode_AIN;
 
-    gpio.pin = Pin_All & ~(Pin_13|Pin_14|Pin_15);  // Leave JTAG pins alone
+    gpio.pin = Pin_All & ~(Pin_13 | Pin_14 | Pin_15);  // Leave JTAG pins alone
     gpioInit(GPIOA, &gpio);
 
     gpio.pin = Pin_All;
@@ -66,4 +67,12 @@ void enableGPIOPowerUsageAndNoiseReductions(void)
     gpioInit(GPIOD, &gpio);
     gpioInit(GPIOE, &gpio);
     gpioInit(GPIOF, &gpio);
+}
+
+bool isMPUSoftReset(void)
+{
+    if (cachedRccCsrValue & RCC_CSR_SFTRSTF)
+        return true;
+    else
+        return false;
 }

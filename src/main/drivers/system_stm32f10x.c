@@ -19,9 +19,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "gpio.h"
+#include "system.h"
 
 #define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
 
@@ -51,4 +52,12 @@ void enableGPIOPowerUsageAndNoiseReductions(void)
     gpioInit(GPIOA, &gpio);
     gpioInit(GPIOB, &gpio);
     gpioInit(GPIOC, &gpio);
+}
+
+bool isMPUSoftReset(void)
+{
+    if (cachedRccCsrValue & RCC_CSR_SFTRSTF)
+        return true;
+    else
+        return false;
 }

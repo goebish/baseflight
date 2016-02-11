@@ -17,15 +17,13 @@
 
 #pragma once
 
-extern uint16_t acc_1G;
-
-typedef void (*sensorInitFuncPtr)(void);                    // sensor init prototype
-typedef void (*sensorReadFuncPtr)(int16_t *data);           // sensor read and align prototype
+extern uint16_t acc_1G; // FIXME move into acc_t
 
 typedef struct gyro_s {
-    sensorInitFuncPtr init;                                 // initialize function
+    sensorGyroInitFuncPtr init;                             // initialize function
     sensorReadFuncPtr read;                                 // read 3 axis data function
     sensorReadFuncPtr temperature;                          // read temperature if available
+    sensorIsDataReadyFuncPtr isDataReady;                   // check if sensor has new readings
     float scale;                                            // scalefactor
 } gyro_t;
 

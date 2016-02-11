@@ -19,23 +19,30 @@
 
 #include <limits.h>
 
-#include "build_config.h"
+extern "C" {
+    #include <platform.h>
 
-#include "common/color.h"
+    #include "build_config.h"
 
-#include "drivers/light_ws2811strip.h"
+    #include "common/color.h"
+
+    #include "drivers/dma.h"
+    #include "drivers/light_ws2811strip.h"
+}
 
 #include "unittest_macros.h"
 #include "gtest/gtest.h"
 
+extern "C" {
 STATIC_UNIT_TESTED extern uint16_t dmaBufferOffset;
 
 STATIC_UNIT_TESTED void fastUpdateLEDDMABuffer(rgbColor24bpp_t *color);
 STATIC_UNIT_TESTED void updateLEDDMABuffer(uint8_t componentValue);
+}
 
 TEST(WS2812, updateDMABuffer) {
     // given
-    rgbColor24bpp_t color1 = {0xFF,0xAA,0x55};
+    rgbColor24bpp_t color1 = { .raw = {0xFF,0xAA,0x55} };
 
     // and
     dmaBufferOffset = 0;
@@ -86,6 +93,7 @@ TEST(WS2812, updateDMABuffer) {
     byteIndex++;
 }
 
+extern "C" {
 rgbColor24bpp_t* hsvToRgb24(const hsvColor_t *c) {
     UNUSED(c);
     return NULL;
@@ -93,3 +101,11 @@ rgbColor24bpp_t* hsvToRgb24(const hsvColor_t *c) {
 
 void ws2811LedStripHardwareInit(void) {}
 void ws2811LedStripDMAEnable(void) {}
+
+void dmaSetHandler(dmaHandlerIdentifier_e, dmaCallbackHandlerFuncPtr ) {}
+
+uint8_t DMA_GetFlagStatus(void *) { return 0; }
+void DMA_Cmd(DMA_Channel_TypeDef*, FunctionalState ) {}
+void DMA_ClearFlag(uint32_t) {}
+
+}

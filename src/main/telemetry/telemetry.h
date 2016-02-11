@@ -21,16 +21,10 @@
  *  Created on: 6 Apr 2014
  *      Author: Hydra
  */
+#include "rx/rx.h"
 
 #ifndef TELEMETRY_COMMON_H_
 #define TELEMETRY_COMMON_H_
-
-typedef enum {
-    TELEMETRY_PROVIDER_FRSKY = 0,
-    TELEMETRY_PROVIDER_HOTT,
-    TELEMETRY_PROVIDER_MSP,
-    TELEMETRY_PROVIDER_MAX = TELEMETRY_PROVIDER_MSP
-} telemetryProvider_e;
 
 typedef enum {
     FRSKY_FORMAT_DMS = 0,
@@ -41,21 +35,23 @@ typedef enum {
     FRSKY_UNIT_METRICS = 0,
     FRSKY_UNIT_IMPERIALS
 } frskyUnit_e;
+
 typedef struct telemetryConfig_s {
-    telemetryProvider_e telemetry_provider;
     uint8_t telemetry_switch;               // Use aux channel to change serial output & baudrate( MSP / Telemetry ). It disables automatic switching to Telemetry when armed.
-    serialInversion_e frsky_inversion;
-	float gpsNoFixLatitude;   
+    uint8_t telemetry_inversion;            // also shared with smartport inversion
+    float gpsNoFixLatitude;   
     float gpsNoFixLongitude;  
     frskyGpsCoordFormat_e frsky_coordinate_format;   
-    frskyUnit_e frsky_unit; 
-    uint16_t batterySize;
+    frskyUnit_e frsky_unit;
+    uint8_t frsky_vfas_precision;
+    uint8_t hottAlarmSoundInterval;
 } telemetryConfig_t;
 
-void checkTelemetryState(void);
-void handleTelemetry(void);
+void telemetryCheckState(void);
+void telemetryProcess(rxConfig_t *rxConfig, uint16_t deadband3d_throttle);
 
-uint32_t getTelemetryProviderBaudRate(void);
-void useTelemetryConfig(telemetryConfig_t *telemetryConfig);
+bool telemetryDetermineEnabledState(portSharing_e portSharing);
+
+void telemetryUseConfig(telemetryConfig_t *telemetryConfig);
 
 #endif /* TELEMETRY_COMMON_H_ */

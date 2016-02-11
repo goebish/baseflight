@@ -23,185 +23,128 @@
 
 #include "common/maths.h"
 
+#include "build_config.h"
 #include <platform.h>
+#include "debug.h"
 
 #include "common/axis.h"
-#include "flight/flight.h"
+#include "common/filter.h"
 
 #include "drivers/system.h"
+#include "drivers/sensor.h"
+#include "drivers/accgyro.h"
+#include "drivers/compass.h"
 
 #include "sensors/sensors.h"
-#include "drivers/accgyro.h"
 #include "sensors/gyro.h"
 #include "sensors/compass.h"
 #include "sensors/acceleration.h"
 #include "sensors/barometer.h"
 #include "sensors/sonar.h"
 
-#include "config/runtime_config.h"
-
 #include "flight/mixer.h"
+#include "flight/pid.h"
 #include "flight/imu.h"
 
-extern int16_t debug[4];
+#include "io/gps.h"
 
-int16_t gyroADC[XYZ_AXIS_COUNT], accADC[XYZ_AXIS_COUNT], accSmooth[XYZ_AXIS_COUNT];
+#include "config/runtime_config.h"
+
+// the limit (in degrees/second) beyond which we stop integrating
+// omega_I. At larger spin rates the DCM PI controller can get 'dizzy'
+// which results in false gyro drift. See
+// http://gentlenav.googlecode.com/files/fastRotations.pdf
+#define SPIN_RATE_LIMIT 20
+
+int16_t accSmooth[XYZ_AXIS_COUNT];
 int32_t accSum[XYZ_AXIS_COUNT];
 
 uint32_t accTimeSum = 0;        // keep track for integration of acc
 int accSumCount = 0;
 float accVelScale;
 
-int16_t smallAngle = 0;
-
-int32_t EstAlt;                // in cm
-int32_t AltHold;
-int32_t setVelocity = 0;
-uint8_t velocityControl = 0;
-int32_t errorVelocityI = 0;
-
-int32_t vario = 0;                      // variometer in cm/s
-
 float throttleAngleScale;
 float fc_acc;
-
-int32_t altHoldThrottleAdjustment = 0;
+float smallAngleCosZ = 0;
 
 float magneticDeclination = 0.0f;       // calculated at startup from config
-float gyroScaleRad;
+static bool isAccelUpdatedAtLeastOnce = false;
 
-// **************
-// gyro+acc IMU
-// **************
-int16_t gyroData[FLIGHT_DYNAMICS_INDEX_COUNT] = { 0, 0, 0 };
-int16_t gyroZero[FLIGHT_DYNAMICS_INDEX_COUNT] = { 0, 0, 0 };
+static imuRuntimeConfig_t *imuRuntimeConfig;
+static pidProfile_t *pidProfile;
+static accDeadband_t *accDeadband;
 
-rollAndPitchInclination_t inclination = { { 0, 0 } };     // absolute angle inclination in multiple of 0.1 degree    180 deg = 1800
-float anglerad[2] = { 0.0f, 0.0f };    // absolute angle inclination in radians
+STATIC_UNIT_TESTED float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;    // quaternion of sensor frame relative to earth frame
+static float rMat[3][3];
 
-static void getEstimatedAttitude(void);
+attitudeEulerAngles_t attitude = { { 0, 0, 0 } };     // absolute angle inclination in multiple of 0.1 degree    180 deg = 1800
 
-imuRuntimeConfig_t *imuRuntimeConfig;
-pidProfile_t *pidProfile;
-accDeadband_t *accDeadband;
+static float gyroScale;
 
-void configureImu(imuRuntimeConfig_t *initialImuRuntimeConfig, pidProfile_t *initialPidProfile, accDeadband_t *initialAccDeadband)
+STATIC_UNIT_TESTED void imuComputeRotationMatrix(void)
+{
+    float q1q1 = sq(q1);
+    float q2q2 = sq(q2);
+    float q3q3 = sq(q3);
+    
+    float q0q1 = q0 * q1;
+    float q0q2 = q0 * q2;
+    float q0q3 = q0 * q3;
+    float q1q2 = q1 * q2;
+    float q1q3 = q1 * q3;
+    float q2q3 = q2 * q3;
+
+    rMat[0][0] = 1.0f - 2.0f * q2q2 - 2.0f * q3q3;
+    rMat[0][1] = 2.0f * (q1q2 + -q0q3);
+    rMat[0][2] = 2.0f * (q1q3 - -q0q2);
+
+    rMat[1][0] = 2.0f * (q1q2 - -q0q3);
+    rMat[1][1] = 1.0f - 2.0f * q1q1 - 2.0f * q3q3;
+    rMat[1][2] = 2.0f * (q2q3 + -q0q1);
+
+    rMat[2][0] = 2.0f * (q1q3 + -q0q2);
+    rMat[2][1] = 2.0f * (q2q3 - -q0q1);
+    rMat[2][2] = 1.0f - 2.0f * q1q1 - 2.0f * q2q2;
+}
+
+void imuConfigure(
+    imuRuntimeConfig_t *initialImuRuntimeConfig,
+    pidProfile_t *initialPidProfile,
+    accDeadband_t *initialAccDeadband,
+    float accz_lpf_cutoff,
+    uint16_t throttle_correction_angle
+)
 {
     imuRuntimeConfig = initialImuRuntimeConfig;
     pidProfile = initialPidProfile;
     accDeadband = initialAccDeadband;
+    fc_acc = calculateAccZLowPassFilterRCTimeConstant(accz_lpf_cutoff);
+    throttleAngleScale = calculateThrottleAngleScale(throttle_correction_angle);
 }
 
-void imuInit()
+void imuInit(void)
 {
-    smallAngle = lrintf(acc_1G * cosf(RAD * imuRuntimeConfig->small_angle));
+    smallAngleCosZ = cos_approx(degreesToRadians(imuRuntimeConfig->small_angle));
+    gyroScale = gyro.scale * (M_PIf / 180.0f);  // gyro output scaled to rad per second
     accVelScale = 9.80665f / acc_1G / 10000.0f;
-    gyroScaleRad = gyro.scale * (M_PI / 180.0f) * 0.000001f;
+
+    imuComputeRotationMatrix();
 }
 
-void calculateThrottleAngleScale(uint16_t throttle_correction_angle)
+float calculateThrottleAngleScale(uint16_t throttle_correction_angle)
 {
-    throttleAngleScale = (1800.0f / M_PI) * (900.0f / throttle_correction_angle);
+    return (1800.0f / M_PIf) * (900.0f / throttle_correction_angle);
 }
 
-void calculateAccZLowPassFilterRCTimeConstant(float accz_lpf_cutoff)
+/*
+* Calculate RC time constant used in the accZ lpf.
+*/
+float calculateAccZLowPassFilterRCTimeConstant(float accz_lpf_cutoff)
 {
-    fc_acc = 0.5f / (M_PI * accz_lpf_cutoff); // calculate RC time constant used in the accZ lpf
+    return 0.5f / (M_PIf * accz_lpf_cutoff);
 }
 
-void computeIMU(rollAndPitchTrims_t *accelerometerTrims, uint8_t mixerConfiguration)
-{
-    static int16_t gyroYawSmooth = 0;
-
-    gyroGetADC();
-    if (sensors(SENSOR_ACC)) {
-        updateAccelerationReadings(accelerometerTrims);
-        getEstimatedAttitude();
-    } else {
-        accADC[X] = 0;
-        accADC[Y] = 0;
-        accADC[Z] = 0;
-    }
-
-    gyroData[FD_ROLL] = gyroADC[FD_ROLL];
-    gyroData[FD_PITCH] = gyroADC[FD_PITCH];
-
-    if (mixerConfiguration == MULTITYPE_TRI) {
-        gyroData[FD_YAW] = (gyroYawSmooth * 2 + gyroADC[FD_YAW]) / 3;
-        gyroYawSmooth = gyroData[FD_YAW];
-    } else {
-        gyroData[FD_YAW] = gyroADC[FD_YAW];
-    }
-}
-
-// **************************************************
-// Simplified IMU based on "Complementary Filter"
-// Inspired by http://starlino.com/imu_guide.html
-//
-// adapted by ziss_dm : http://www.multiwii.com/forum/viewtopic.php?f=8&t=198
-//
-// The following ideas was used in this project:
-// 1) Rotation matrix: http://en.wikipedia.org/wiki/Rotation_matrix
-//
-// Currently Magnetometer uses separate CF which is used only
-// for heading approximation.
-//
-// **************************************************
-
-
-t_fp_vector EstG;
-
-// Normalize a vector
-void normalizeV(struct fp_vector *src, struct fp_vector *dest)
-{
-    float length;
-
-    length = sqrtf(src->X * src->X + src->Y * src->Y + src->Z * src->Z);
-    if (length != 0) {
-        dest->X = src->X / length;
-        dest->Y = src->Y / length;
-        dest->Z = src->Z / length;
-    }
-}
-
-// Rotate Estimated vector(s) with small angle approximation, according to the gyro data
-void rotateV(struct fp_vector *v, fp_angles_t *delta)
-{
-    struct fp_vector v_tmp = *v;
-
-    // This does a  "proper" matrix rotation using gyro deltas without small-angle approximation
-    float mat[3][3];
-    float cosx, sinx, cosy, siny, cosz, sinz;
-    float coszcosx, sinzcosx, coszsinx, sinzsinx;
-
-    cosx = cosf(delta->angles.roll);
-    sinx = sinf(delta->angles.roll);
-    cosy = cosf(delta->angles.pitch);
-    siny = sinf(delta->angles.pitch);
-    cosz = cosf(delta->angles.yaw);
-    sinz = sinf(delta->angles.yaw);
-
-    coszcosx = cosz * cosx;
-    sinzcosx = sinz * cosx;
-    coszsinx = sinx * cosz;
-    sinzsinx = sinx * sinz;
-
-    mat[0][0] = cosz * cosy;
-    mat[0][1] = -cosy * sinz;
-    mat[0][2] = siny;
-    mat[1][0] = sinzcosx + (coszsinx * siny);
-    mat[1][1] = coszcosx - (sinzsinx * siny);
-    mat[1][2] = -sinx * cosy;
-    mat[2][0] = (sinzsinx) - (coszcosx * siny);
-    mat[2][1] = (coszsinx) + (sinzcosx * siny);
-    mat[2][2] = cosy * cosx;
-
-    v->X = v_tmp.X * mat[0][0] + v_tmp.Y * mat[1][0] + v_tmp.Z * mat[2][0];
-    v->Y = v_tmp.X * mat[0][1] + v_tmp.Y * mat[1][1] + v_tmp.Z * mat[2][1];
-    v->Z = v_tmp.X * mat[0][2] + v_tmp.Y * mat[1][2] + v_tmp.Z * mat[2][2];
-}
-
-void accSum_reset(void)
+void imuResetAccelerationSum(void)
 {
     accSum[0] = 0;
     accSum[1] = 0;
@@ -210,28 +153,36 @@ void accSum_reset(void)
     accTimeSum = 0;
 }
 
+void imuTransformVectorBodyToEarth(t_fp_vector * v)
+{
+    float x,y,z;
+
+    /* From body frame to earth frame */
+    x = rMat[0][0] * v->V.X + rMat[0][1] * v->V.Y + rMat[0][2] * v->V.Z;
+    y = rMat[1][0] * v->V.X + rMat[1][1] * v->V.Y + rMat[1][2] * v->V.Z;
+    z = rMat[2][0] * v->V.X + rMat[2][1] * v->V.Y + rMat[2][2] * v->V.Z;
+
+    v->V.X = x;
+    v->V.Y = -y;
+    v->V.Z = z;
+}
+
 // rotate acc into Earth frame and calculate acceleration in it
-void acc_calc(uint32_t deltaT)
+void imuCalculateAcceleration(uint32_t deltaT)
 {
     static int32_t accZoffset = 0;
     static float accz_smooth = 0;
     float dT;
-    fp_angles_t rpy;
     t_fp_vector accel_ned;
 
     // deltaT is measured in us ticks
     dT = (float)deltaT * 1e-6f;
 
-    // the accel values have to be rotated into the earth frame
-    rpy.angles.roll = -(float)anglerad[AI_ROLL];
-    rpy.angles.pitch = -(float)anglerad[AI_PITCH];
-    rpy.angles.yaw = -(float)heading * RAD;
-
     accel_ned.V.X = accSmooth[0];
     accel_ned.V.Y = accSmooth[1];
     accel_ned.V.Z = accSmooth[2];
 
-    rotateV(&accel_ned.V, &rpy);
+    imuTransformVectorBodyToEarth(&accel_ned);
 
     if (imuRuntimeConfig->acc_unarmedcal == 1) {
         if (!ARMING_FLAG(ARMED)) {
@@ -254,106 +205,267 @@ void acc_calc(uint32_t deltaT)
     accSumCount++;
 }
 
-// baseflight calculation by Luggi09 originates from arducopter
-static int16_t calculateHeading(t_fp_vector *vec)
+static float invSqrt(float x)
 {
-    int16_t head;
-
-    float cosineRoll = cosf(anglerad[AI_ROLL]);
-    float sineRoll = sinf(anglerad[AI_ROLL]);
-    float cosinePitch = cosf(anglerad[AI_PITCH]);
-    float sinePitch = sinf(anglerad[AI_PITCH]);
-    float Xh = vec->A[X] * cosinePitch + vec->A[Y] * sineRoll * sinePitch + vec->A[Z] * sinePitch * cosineRoll;
-    float Yh = vec->A[Y] * cosineRoll - vec->A[Z] * sineRoll;
-    float hd = (atan2f(Yh, Xh) * 1800.0f / M_PI + magneticDeclination) / 10.0f;
-    head = lrintf(hd);
-    if (head < 0)
-        head += 360;
-
-    return head;
+    return 1.0f / sqrtf(x);
 }
 
-static void getEstimatedAttitude(void)
+static bool imuUseFastGains(void)
 {
-    int32_t axis;
-    int32_t accMag = 0;
-    static t_fp_vector EstM;
-    static t_fp_vector EstN = { .A = { 1.0f, 0.0f, 0.0f } };
-    static float accLPF[3];
-    static uint32_t previousT;
-    uint32_t currentT = micros();
-    uint32_t deltaT;
-    float scale;
-    fp_angles_t deltaGyroAngle;
-    deltaT = currentT - previousT;
-    scale = deltaT * gyroScaleRad;
-    previousT = currentT;
+    return !ARMING_FLAG(ARMED) && millis() < 20000;
+}
 
-    // Initialization
-    for (axis = 0; axis < 3; axis++) {
-        deltaGyroAngle.raw[axis] = gyroADC[axis] * scale;
-        if (imuRuntimeConfig->acc_lpf_factor > 0) {
-            accLPF[axis] = accLPF[axis] * (1.0f - (1.0f / imuRuntimeConfig->acc_lpf_factor)) + accADC[axis] * (1.0f / imuRuntimeConfig->acc_lpf_factor);
-            accSmooth[axis] = accLPF[axis];
-        } else {
-            accSmooth[axis] = accADC[axis];
+static float imuGetPGainScaleFactor(void)
+{
+    if (imuUseFastGains()) {
+        return 10.0f;
+    }
+    else {
+        return 1.0f;
+    }
+}
+
+static void imuMahonyAHRSupdate(float dt, float gx, float gy, float gz,
+                                bool useAcc, float ax, float ay, float az,
+                                bool useMag, float mx, float my, float mz,
+                                bool useYaw, float yawError)
+{
+    static float integralFBx = 0.0f,  integralFBy = 0.0f, integralFBz = 0.0f;    // integral error terms scaled by Ki
+    float recipNorm;
+    float hx, hy, bx;
+    float ex = 0, ey = 0, ez = 0;
+    float qa, qb, qc;
+
+    // Calculate general spin rate (rad/s)
+    float spin_rate = sqrtf(sq(gx) + sq(gy) + sq(gz));
+
+    // Use raw heading error (from GPS or whatever else)
+    if (useYaw) {
+        while (yawError >  M_PIf) yawError -= (2.0f * M_PIf);
+        while (yawError < -M_PIf) yawError += (2.0f * M_PIf);
+
+        ez += sin_approx(yawError / 2.0f);
+    }
+
+    // Use measured magnetic field vector
+    recipNorm = sq(mx) + sq(my) + sq(mz);
+    if (useMag && recipNorm > 0.01f) {
+        // Normalise magnetometer measurement
+        recipNorm = invSqrt(recipNorm);
+        mx *= recipNorm;
+        my *= recipNorm;
+        mz *= recipNorm;
+
+        // For magnetometer correction we make an assumption that magnetic field is perpendicular to gravity (ignore Z-component in EF).
+        // This way magnetic field will only affect heading and wont mess roll/pitch angles
+
+        // (hx; hy; 0) - measured mag field vector in EF (assuming Z-component is zero)
+        // (bx; 0; 0) - reference mag field vector heading due North in EF (assuming Z-component is zero)
+        hx = rMat[0][0] * mx + rMat[0][1] * my + rMat[0][2] * mz;
+        hy = rMat[1][0] * mx + rMat[1][1] * my + rMat[1][2] * mz;
+        bx = sqrtf(hx * hx + hy * hy);
+
+        // magnetometer error is cross product between estimated magnetic north and measured magnetic north (calculated in EF)
+        float ez_ef = -(hy * bx);
+
+        // Rotate mag error vector back to BF and accumulate
+        ex += rMat[2][0] * ez_ef;
+        ey += rMat[2][1] * ez_ef;
+        ez += rMat[2][2] * ez_ef;
+    }
+
+    // Use measured acceleration vector
+    recipNorm = sq(ax) + sq(ay) + sq(az);
+    if (useAcc && recipNorm > 0.01f) {
+        // Normalise accelerometer measurement
+        recipNorm = invSqrt(recipNorm);
+        ax *= recipNorm;
+        ay *= recipNorm;
+        az *= recipNorm;
+
+        // Error is sum of cross product between estimated direction and measured direction of gravity
+        ex += (ay * rMat[2][2] - az * rMat[2][1]);
+        ey += (az * rMat[2][0] - ax * rMat[2][2]);
+        ez += (ax * rMat[2][1] - ay * rMat[2][0]);
+    }
+
+    // Compute and apply integral feedback if enabled
+    if(imuRuntimeConfig->dcm_ki > 0.0f) {
+        // Stop integrating if spinning beyond the certain limit
+        if (spin_rate < DEGREES_TO_RADIANS(SPIN_RATE_LIMIT)) {
+            float dcmKiGain = imuRuntimeConfig->dcm_ki;
+            integralFBx += dcmKiGain * ex * dt;    // integral error scaled by Ki
+            integralFBy += dcmKiGain * ey * dt;
+            integralFBz += dcmKiGain * ez * dt;
         }
-        accMag += (int32_t)accSmooth[axis] * accSmooth[axis];
     }
-    accMag = accMag * 100 / ((int32_t)acc_1G * acc_1G);
-
-    rotateV(&EstG.V, &deltaGyroAngle);
-
-    // Apply complimentary filter (Gyro drift correction)
-    // If accel magnitude >1.15G or <0.85G and ACC vector outside of the limit range => we neutralize the effect of accelerometers in the angle estimation.
-    // To do that, we just skip filter, as EstV already rotated by Gyro
-
-    float invGyroComplimentaryFilterFactor = (1.0f / (imuRuntimeConfig->gyro_cmpf_factor + 1.0f));
-
-    if (72 < (uint16_t)accMag && (uint16_t)accMag < 133) {
-        for (axis = 0; axis < 3; axis++)
-            EstG.A[axis] = (EstG.A[axis] * imuRuntimeConfig->gyro_cmpf_factor + accSmooth[axis]) * invGyroComplimentaryFilterFactor;
+    else {
+        integralFBx = 0.0f;    // prevent integral windup
+        integralFBy = 0.0f;
+        integralFBz = 0.0f;
     }
 
-    if (EstG.A[Z] > smallAngle) {
+    // Calculate kP gain. If we are acquiring initial attitude (not armed and within 20 sec from powerup) scale the kP to converge faster
+    float dcmKpGain = imuRuntimeConfig->dcm_kp * imuGetPGainScaleFactor();
+
+    // Apply proportional and integral feedback
+    gx += dcmKpGain * ex + integralFBx;
+    gy += dcmKpGain * ey + integralFBy;
+    gz += dcmKpGain * ez + integralFBz;
+
+    // Integrate rate of change of quaternion
+    gx *= (0.5f * dt);
+    gy *= (0.5f * dt);
+    gz *= (0.5f * dt);
+
+    qa = q0;
+    qb = q1;
+    qc = q2;
+    q0 += (-qb * gx - qc * gy - q3 * gz);
+    q1 += (qa * gx + qc * gz - q3 * gy);
+    q2 += (qa * gy - qb * gz + q3 * gx);
+    q3 += (qa * gz + qb * gy - qc * gx);
+
+    // Normalise quaternion
+    recipNorm = invSqrt(sq(q0) + sq(q1) + sq(q2) + sq(q3));
+    q0 *= recipNorm;
+    q1 *= recipNorm;
+    q2 *= recipNorm;
+    q3 *= recipNorm;
+
+    // Pre-compute rotation matrix from quaternion
+    imuComputeRotationMatrix();
+}
+
+STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
+{
+    /* Compute pitch/roll angles */
+    attitude.values.roll = lrintf(atan2_approx(rMat[2][1], rMat[2][2]) * (1800.0f / M_PIf));
+    attitude.values.pitch = lrintf(((0.5f * M_PIf) - acos_approx(-rMat[2][0])) * (1800.0f / M_PIf));
+    attitude.values.yaw = lrintf((-atan2_approx(rMat[1][0], rMat[0][0]) * (1800.0f / M_PIf) + magneticDeclination));
+
+    if (attitude.values.yaw < 0)
+        attitude.values.yaw += 3600;
+
+    /* Update small angle state */
+    if (rMat[2][2] > smallAngleCosZ) {
         ENABLE_STATE(SMALL_ANGLE);
     } else {
         DISABLE_STATE(SMALL_ANGLE);
     }
-
-    // Attitude of the estimated vector
-    anglerad[AI_ROLL] = atan2f(EstG.V.Y, EstG.V.Z);
-    anglerad[AI_PITCH] = atan2f(-EstG.V.X, sqrtf(EstG.V.Y * EstG.V.Y + EstG.V.Z * EstG.V.Z));
-    inclination.values.rollDeciDegrees = lrintf(anglerad[AI_ROLL] * (1800.0f / M_PI));
-    inclination.values.pitchDeciDegrees = lrintf(anglerad[AI_PITCH] * (1800.0f / M_PI));
-
-    if (sensors(SENSOR_MAG)) {
-        rotateV(&EstM.V, &deltaGyroAngle);
-        // FIXME what does the _M_ mean?
-        float invGyroComplimentaryFilter_M_Factor = (1.0f / (imuRuntimeConfig->gyro_cmpfm_factor + 1.0f));
-        for (axis = 0; axis < 3; axis++) {
-            EstM.A[axis] = (EstM.A[axis] * imuRuntimeConfig->gyro_cmpfm_factor + magADC[axis]) * invGyroComplimentaryFilter_M_Factor;
-        }
-        heading = calculateHeading(&EstM);
-    } else {
-        rotateV(&EstN.V, &deltaGyroAngle);
-        normalizeV(&EstN.V, &EstN.V);
-        heading = calculateHeading(&EstN);
-    }
-
-    acc_calc(deltaT); // rotate acc vector into earth frame
 }
 
-// correction of throttle in lateral wind,
+static bool imuIsAccelerometerHealthy(void)
+{
+    int32_t axis;
+    int32_t accMagnitude = 0;
+
+    for (axis = 0; axis < 3; axis++) {
+        accMagnitude += (int32_t)accSmooth[axis] * accSmooth[axis];
+    }
+
+    accMagnitude = accMagnitude * 100 / (sq((int32_t)acc_1G));
+
+    // Accept accel readings only in range 0.90g - 1.10g
+    return (81 < accMagnitude) && (accMagnitude < 121);
+}
+
+#ifdef MAG
+static bool isMagnetometerHealthy(void)
+{
+    return (magADC[X] != 0) && (magADC[Y] != 0) && (magADC[Z] != 0);
+}
+#endif
+
+static void imuCalculateEstimatedAttitude(void)
+{
+    static filterStatePt1_t accLPFState[3];
+    static uint32_t previousIMUUpdateTime;
+    float rawYawError = 0;
+    int32_t axis;
+    bool useAcc = false;
+    bool useMag = false;
+    bool useYaw = false;
+
+    uint32_t currentTime = micros();
+    uint32_t deltaT = currentTime - previousIMUUpdateTime;
+    previousIMUUpdateTime = currentTime;
+
+    // Smooth and use only valid accelerometer readings
+    for (axis = 0; axis < 3; axis++) {
+        if (imuRuntimeConfig->acc_cut_hz > 0) {
+            accSmooth[axis] = filterApplyPt1(accADC[axis], &accLPFState[axis], imuRuntimeConfig->acc_cut_hz, deltaT * 1e-6f);
+        } else {
+            accSmooth[axis] = accADC[axis];
+        }
+    }
+
+    if (imuIsAccelerometerHealthy()) {
+        useAcc = true;
+    }
+
+#ifdef MAG
+    if (sensors(SENSOR_MAG) && isMagnetometerHealthy()) {
+        useMag = true;
+    }
+#endif
+#if defined(GPS)
+    else if (STATE(FIXED_WING) && sensors(SENSOR_GPS) && STATE(GPS_FIX) && GPS_numSat >= 5 && GPS_speed >= 300) {
+        // In case of a fixed-wing aircraft we can use GPS course over ground to correct heading
+        rawYawError = DECIDEGREES_TO_RADIANS(attitude.values.yaw - GPS_ground_course);
+        useYaw = true;
+    }
+#endif
+
+    imuMahonyAHRSupdate(deltaT * 1e-6f,
+                        gyroADC[X] * gyroScale, gyroADC[Y] * gyroScale, gyroADC[Z] * gyroScale,
+                        useAcc, accSmooth[X], accSmooth[Y], accSmooth[Z],
+                        useMag, magADC[X], magADC[Y], magADC[Z],
+                        useYaw, rawYawError);
+
+    imuUpdateEulerAngles();
+
+    imuCalculateAcceleration(deltaT); // rotate acc vector into earth frame
+}
+
+void imuUpdateAccelerometer(rollAndPitchTrims_t *accelerometerTrims)
+{
+    if (sensors(SENSOR_ACC)) {
+        updateAccelerationReadings(accelerometerTrims);
+        isAccelUpdatedAtLeastOnce = true;
+    }
+}
+
+void imuUpdateGyroAndAttitude(void)
+{
+    gyroUpdate();
+
+    if (sensors(SENSOR_ACC) && isAccelUpdatedAtLeastOnce) {
+        imuCalculateEstimatedAttitude();
+    } else {
+        accADC[X] = 0;
+        accADC[Y] = 0;
+        accADC[Z] = 0;
+    }
+}
+
+float getCosTiltAngle(void)
+{
+    return rMat[2][2];
+}
+
 int16_t calculateThrottleAngleCorrection(uint8_t throttle_correction_value)
 {
-    float cosZ = EstG.V.Z / sqrtf(EstG.V.X * EstG.V.X + EstG.V.Y * EstG.V.Y + EstG.V.Z * EstG.V.Z);
-
-    if (cosZ <= 0.015f) { // we are inverted, vertical or with a small angle < 0.86 deg
+    /*
+    * Use 0 as the throttle angle correction if we are inverted, vertical or with a
+    * small angle < 0.86 deg
+    * TODO: Define this small angle in config.
+    */
+    if (rMat[2][2] <= 0.015f) {
         return 0;
     }
-    int angle = lrintf(acosf(cosZ) * throttleAngleScale);
+    int angle = lrintf(acos_approx(rMat[2][2]) * throttleAngleScale);
     if (angle > 900)
         angle = 900;
-    return lrintf(throttle_correction_value * sinf(angle / (900.0f * M_PI / 2.0f)));
+    return lrintf(throttle_correction_value * sin_approx(angle / (900.0f * M_PIf / 2.0f)));
 }

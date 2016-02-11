@@ -17,18 +17,22 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 
 #include <limits.h>
 
 #define BARO
 
 extern "C" {
+    #include "debug.h"
+
     #include "common/axis.h"
-    #include "flight/flight.h"
-    #include "flight/altitudehold.h"
+    #include "common/maths.h"
 
     #include "sensors/sensors.h"
+    #include "drivers/sensor.h"
     #include "drivers/accgyro.h"
+    #include "drivers/compass.h"
     #include "sensors/gyro.h"
     #include "sensors/compass.h"
     #include "sensors/acceleration.h"
@@ -36,74 +40,131 @@ extern "C" {
 
     #include "config/runtime_config.h"
 
+    #include "rx/rx.h"
+
     #include "flight/mixer.h"
+    #include "flight/pid.h"
     #include "flight/imu.h"
 }
 
 #include "unittest_macros.h"
 #include "gtest/gtest.h"
 
-#define DOWNWARDS_THRUST true
-#define UPWARDS_THRUST false
-
-
-extern "C" {
-    bool isThrustFacingDownwards(rollAndPitchInclination_t *inclinations);
+extern float q0, q1, q2, q3;
+extern "C" { 
+void imuComputeRotationMatrix(void);
+void imuUpdateEulerAngles(void);
 }
 
-typedef struct inclinationExpectation_s {
-    rollAndPitchInclination_t inclination;
-    bool expectDownwardsThrust;
-} inclinationExpectation_t;
-
-TEST(FlightImuTest, IsThrustFacingDownwards)
+void imuComputeQuaternionFromRPY(int16_t initialRoll, int16_t initialPitch, int16_t initialYaw)
 {
-    // given
+    if (initialRoll > 1800) initialRoll -= 3600;
+    if (initialPitch > 1800) initialPitch -= 3600;
+    if (initialYaw > 1800) initialYaw -= 3600;
 
-    inclinationExpectation_t inclinationExpectations[] = {
-            { { 0, 0 }, DOWNWARDS_THRUST },
-            { { 799, 799 }, DOWNWARDS_THRUST },
-            { { 800, 799 }, UPWARDS_THRUST },
-            { { 799, 800 }, UPWARDS_THRUST },
-            { { 800, 800 }, UPWARDS_THRUST },
-            { { 801, 801 }, UPWARDS_THRUST },
-            { { -799, -799 }, DOWNWARDS_THRUST },
-            { { -800, -799 }, UPWARDS_THRUST },
-            { { -799, -800 }, UPWARDS_THRUST },
-            { { -800, -800 }, UPWARDS_THRUST },
-            { { -801, -801 }, UPWARDS_THRUST }
-    };
-    uint8_t testIterationCount = sizeof(inclinationExpectations) / sizeof(inclinationExpectation_t);
+    float cosRoll = cosf(DECIDEGREES_TO_RADIANS(initialRoll) * 0.5f);
+    float sinRoll = sinf(DECIDEGREES_TO_RADIANS(initialRoll) * 0.5f);
 
-    // expect
+    float cosPitch = cosf(DECIDEGREES_TO_RADIANS(initialPitch) * 0.5f);
+    float sinPitch = sinf(DECIDEGREES_TO_RADIANS(initialPitch) * 0.5f);
 
-    for (uint8_t index = 0; index < testIterationCount; index ++) {
-        inclinationExpectation_t *angleInclinationExpectation = &inclinationExpectations[index];
-        printf("iteration: %d\n", index);
-        bool result = isThrustFacingDownwards(&angleInclinationExpectation->inclination);
-        EXPECT_EQ(angleInclinationExpectation->expectDownwardsThrust, result);
-    }
+    float cosYaw = cosf(DECIDEGREES_TO_RADIANS(-initialYaw) * 0.5f);
+    float sinYaw = sinf(DECIDEGREES_TO_RADIANS(-initialYaw) * 0.5f);
+
+    q0 = cosRoll * cosPitch * cosYaw + sinRoll * sinPitch * sinYaw;
+    q1 = sinRoll * cosPitch * cosYaw - cosRoll * sinPitch * sinYaw;
+    q2 = cosRoll * sinPitch * cosYaw + sinRoll * cosPitch * sinYaw;
+    q3 = cosRoll * cosPitch * sinYaw - sinRoll * sinPitch * cosYaw;
+
+    imuComputeRotationMatrix();
+}
+
+TEST(FlightImuTest, TestEulerAngleCalculation)
+{
+    imuComputeQuaternionFromRPY(0, 0, 0);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, 0);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 0);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 0);
+
+    imuComputeQuaternionFromRPY(450, 450, 0);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, 450);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 450);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 0);
+
+    imuComputeQuaternionFromRPY(-450, -450, 0);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, -450);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, -450);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 0);
+
+    imuComputeQuaternionFromRPY(1790, 0, 0);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, 1790);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 0);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 0);
+
+    imuComputeQuaternionFromRPY(-1790, 0, 0);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, -1790);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 0);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 0);
+
+    imuComputeQuaternionFromRPY(0, 0, 900);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, 0);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 0);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 900);
+
+    imuComputeQuaternionFromRPY(0, 0, 2700);
+    imuUpdateEulerAngles();
+    EXPECT_FLOAT_EQ(attitude.values.roll, 0);
+    EXPECT_FLOAT_EQ(attitude.values.pitch, 0);
+    EXPECT_FLOAT_EQ(attitude.values.yaw, 2700);
 }
 
 // STUBS
 
 extern "C" {
+uint32_t rcModeActivationMask;
+int16_t rcCommand[4];
+int16_t rcData[MAX_SUPPORTED_RC_CHANNEL_COUNT];
 
 uint16_t acc_1G;
 int16_t heading;
 gyro_t gyro;
 int16_t magADC[XYZ_AXIS_COUNT];
 int32_t BaroAlt;
-int16_t debug[4];
+int16_t debug[DEBUG16_VALUE_COUNT];
 
 uint8_t stateFlags;
 uint16_t flightModeFlags;
 uint8_t armingFlags;
 
 int32_t sonarAlt;
+int16_t sonarCfAltCm;
+int16_t sonarMaxAltWithTiltCm;
+int16_t accADC[XYZ_AXIS_COUNT];
+int16_t gyroADC[XYZ_AXIS_COUNT];
+
+int16_t GPS_speed;
+int16_t GPS_ground_course;
+int16_t GPS_numSat;
+int16_t cycleTime = 2000;
 
 
-void gyroGetADC(void) {};
+uint16_t enableFlightMode(flightModeFlags_e mask)
+{
+    return flightModeFlags |= (mask);
+}
+
+uint16_t disableFlightMode(flightModeFlags_e mask)
+{
+    return flightModeFlags &= ~(mask);
+}
+
+void gyroUpdate(void) {};
 bool sensors(uint32_t mask)
 {
     UNUSED(mask);
@@ -115,15 +176,8 @@ void updateAccelerationReadings(rollAndPitchTrims_t *rollAndPitchTrims)
 }
 
 uint32_t micros(void) { return 0; }
+uint32_t millis(void) { return 0; }
 bool isBaroCalibrationComplete(void) { return true; }
 void performBaroCalibrationCycle(void) {}
 int32_t baroCalculateAltitude(void) { return 0; }
-int constrain(int amt, int low, int high)
-{
-    UNUSED(amt);
-    UNUSED(low);
-    UNUSED(high);
-    return 0;
-}
-
 }
