@@ -56,6 +56,7 @@ typedef struct drv_pwm_config_s {
     bool useParallelPWM;
     bool usePPM;
     bool useSerialRx;
+    bool useNRF24Rx;
     bool useRSSIADC;
     bool useCurrentMeterADC;
 #ifdef STM32F10X

@@ -354,6 +354,7 @@ void init(void)
     pwm_params.useVbat = feature(FEATURE_VBAT);
     pwm_params.useSoftSerial = feature(FEATURE_SOFTSERIAL);
     pwm_params.useParallelPWM = feature(FEATURE_RX_PARALLEL_PWM);
+    pwm_params.useNRF24Rx = feature(FEATURE_RX_NRF24);
     pwm_params.useRSSIADC = feature(FEATURE_RSSI_ADC);
     pwm_params.useCurrentMeterADC = feature(FEATURE_CURRENT_METER)
         && masterConfig.batteryConfig.currentMeterType == CURRENT_SENSOR_ADC;

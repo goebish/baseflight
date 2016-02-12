@@ -62,6 +62,10 @@
 // Since the CrazePony MINI PCB has holes for 4 motors in each corner we can save same flash space by disabling support for other mixers.
 #define USE_QUAD_MIXER_ONLY
 
+#define USE_SPI
+#define USE_SPI_DEVICE_1
+
+#define NRF24_SPI       SPI1
 
 #if (FLASH_SIZE > 64)
 #define BLACKBOX
